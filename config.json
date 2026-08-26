@@ -76,7 +76,7 @@
     },
 
     "tts": {
-        "enabled": true,
+        "enabled": false,
         "baseUrl": "https://api.elevenlabs.io/v1/text-to-speech",
         "defaultVoiceId": "JgWCVquTJEvtfo5gWQkx",
         "defaultModelId": "eleven_v3",

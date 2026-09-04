@@ -40,8 +40,10 @@ if (!ELEVENLABS_API_KEY) {
 let latestSensor = {};
 let page = null;
 let ttsQueue = Promise.resolve();
+let chatOperationQueue = Promise.resolve();
 let blueskyAgent = null;
 let blueskyLoginPromise = null;
+const processedVisionEventIds = new Set();
 
 /* ---------------------------
    ElevenLabs TTS
@@ -422,19 +424,39 @@ function auditLLMJson(payload) {
 /* ---------------------------
    Kernel output
 --------------------------- */
-async function sendJsonToChatGPT(obj) {
+function enqueueChatOperation(operation) {
+    const queued = chatOperationQueue.then(operation);
+    chatOperationQueue = queued.catch(() => {});
+    return queued;
+}
+
+async function sendJsonToChatGPTNow(obj) {
     if (!page) {
-        console.log("ChatGPT send skipped: page is not ready", obj);
-        return;
+        throw new Error("ChatGPT page is not ready");
     }
     const json = JSON.stringify(obj);
 
     await page.waitForSelector(CHAT_INPUT_SELECTOR, { timeout: config.browser.inputTimeoutMs });
+    const existingText = await page.$eval(
+        CHAT_INPUT_SELECTOR,
+        (element) => ("value" in element ? element.value : element.innerText) || "",
+    );
+    if (existingText.trim()) {
+        await page.click(CHAT_INPUT_SELECTOR);
+        await page.keyboard.down("Control");
+        await page.keyboard.press("A");
+        await page.keyboard.up("Control");
+        await page.keyboard.press("Backspace");
+    }
     await page.type(CHAT_INPUT_SELECTOR, json, { delay: config.browser.typeDelayMs });
     await page.waitForSelector(config.browser.enabledSendButtonSelector);
     await page.click(config.browser.sendButtonSelector);
 
     console.log("ChatGPT JSON sent:", json);
+}
+
+function sendJsonToChatGPT(obj) {
+    return enqueueChatOperation(() => sendJsonToChatGPTNow(obj));
 }
 
 function getVisionMimeType(contentType, buffer) {
@@ -549,23 +571,48 @@ async function attachImageToChatGPT({ buffer, mimeType }) {
             enabledSendButtonSelector: config.browser.enabledSendButtonSelector,
             before: attachmentStateBeforeUpload,
         });
-    } finally {
+
+        console.log("ChatGPT image attachment detected");
+        return { imagePath, tempDirectory };
+    } catch (err) {
         await fs.promises.unlink(imagePath).catch(() => {});
         await fs.promises.rmdir(tempDirectory).catch(() => {});
+        throw err;
     }
+}
 
-    console.log("ChatGPT image attachment detected");
+function scheduleVisionTempFileCleanup({ imagePath, tempDirectory }) {
+    const timer = setTimeout(async () => {
+        await fs.promises.unlink(imagePath).catch((err) => {
+            console.error("vision temp image cleanup failed:", err.message);
+        });
+        await fs.promises.rmdir(tempDirectory).catch((err) => {
+            console.error("vision temp directory cleanup failed:", err.message);
+        });
+    }, config.vision.tempFileRetentionMs);
+
+    // Cleanup must not keep the Kernel process alive during shutdown.
+    timer.unref();
 }
 
 async function sendVisionImageToChatGPT(request) {
     const snapshot = await fetchVisionSnapshot();
-    await attachImageToChatGPT(snapshot);
-    await sendJsonToChatGPT({
-        vision: {
-            task: request.params.task,
-            query: config.vision.defaultQuery,
-            input: "attached_image",
-        },
+    await enqueueChatOperation(async () => {
+        const temporaryFile = await attachImageToChatGPT(snapshot);
+        try {
+            await sendJsonToChatGPTNow({
+                vision: {
+                    task: request.params.task,
+                    query: config.vision.defaultQuery,
+                    input: "attached_image",
+                },
+            });
+        } finally {
+            // DOM.setFileInputFiles creates a path-backed File. ChatGPT reads it
+            // asynchronously while uploading to files.oaiusercontent.com, so an
+            // immediate unlink makes an otherwise valid upload fail.
+            scheduleVisionTempFileCleanup(temporaryFile);
+        }
     });
 }
 
@@ -700,6 +747,7 @@ function normalizeVisionEvent(body) {
             throw new Error("legacy vision event track_id is invalid");
         }
         return {
+            event_id: `legacy:${body.action}:${String(body.track_id)}`,
             source: "deepsort",
             type: `person_${body.action}`,
             track_id: String(body.track_id),
@@ -719,17 +767,20 @@ function normalizeVisionEvent(body) {
         throw new Error("vision event must be an object");
     }
     const event = body.event;
-    const allowedKeys = ["source", "type", "track_id", "timestamp", "identity", "message", "position"];
+    const allowedKeys = ["event_id", "source", "type", "track_id", "timestamp", "identity", "message", "position"];
     if (Object.keys(event).some((key) => !allowedKeys.includes(key))) {
         throw new Error("vision event contains an unknown field");
     }
-    for (const key of ["source", "type", "track_id", "timestamp", "identity", "message"]) {
+    for (const key of ["event_id", "source", "type", "track_id", "timestamp", "identity", "message"]) {
         if (!Object.prototype.hasOwnProperty.call(event, key)) {
             throw new Error(`vision event is missing ${key}`);
         }
     }
     if (event.source !== "deepsort") {
         throw new Error("vision event source must be deepsort");
+    }
+    if (typeof event.event_id !== "string" || !/^[A-Za-z0-9:_-]{1,128}$/.test(event.event_id)) {
+        throw new Error("vision event event_id is invalid");
     }
     if (!["person_appeared", "person_disappeared", "person_recognized", "person_unknown", "person_enrolled"].includes(event.type)) {
         throw new Error("vision event type is invalid");
@@ -748,6 +799,7 @@ function normalizeVisionEvent(body) {
     }
 
     const normalized = {
+        event_id: event.event_id,
         source: event.source,
         type: event.type,
         track_id: String(event.track_id),
@@ -850,10 +902,21 @@ app.post(config.routes.yoloEvent, async (req, res) => {
         return res.status(400).json({ error: err.message });
     }
 
+    if (processedVisionEventIds.has(event.event_id)) {
+        console.log("ignored duplicate vision event:", event.event_id);
+        return res.status(200).json({ status: "duplicate_ignored" });
+    }
+    if (processedVisionEventIds.size >= 1000) {
+        const oldestEventId = processedVisionEventIds.values().next().value;
+        processedVisionEventIds.delete(oldestEventId);
+    }
+    processedVisionEventIds.add(event.event_id);
+
     try {
         await sendJsonToChatGPT({ event });
         return res.sendStatus(200);
     } catch (err) {
+        processedVisionEventIds.delete(event.event_id);
         console.error("vision event delivery failed:", err.message);
         return res.status(503).json({ error: "ChatGPT delivery failed" });
     }
@@ -981,13 +1044,18 @@ async function runLLaVA(prompt) {
     console.log("ChatGPT input detected");
 
     let streamBuffer = "";
-    const processedJsonTexts = new Set();
+    const processedJsonTextsByMessage = new Map();
 
-    await page.exposeFunction("onPartialOutput", async (text) => {
+    await page.exposeFunction("onPartialOutput", async (messageId, text) => {
         streamBuffer = `${text}\n`;
 
         const extracted = extractCompleteJsonObjects(streamBuffer);
         streamBuffer = extracted.rest;
+        let processedJsonTexts = processedJsonTextsByMessage.get(messageId);
+        if (!processedJsonTexts) {
+            processedJsonTexts = new Set();
+            processedJsonTextsByMessage.set(messageId, processedJsonTexts);
+        }
 
         for (const jsonText of extracted.objects) {
             if (processedJsonTexts.has(jsonText)) {
@@ -1015,46 +1083,63 @@ async function runLLaVA(prompt) {
         }
     });
 
-    await page.evaluate(({ assistantOutputSelector, outputPollIntervalMs }) => {
+    const startupAssistantTurnBoundary = await page.evaluate(({ assistantOutputSelector, outputPollIntervalMs }) => {
         const lastContents = new Map();
-        const ignoredInitialContainers = new WeakSet();
-        let initialScanDone = false;
+
+        function getMessageIdentity(container) {
+            const message = container.closest('[data-message-author-role="assistant"]');
+            const turn = container.closest('[data-testid^="conversation-turn-"]');
+            const turnMatch = turn?.getAttribute("data-testid")?.match(/^conversation-turn-(\d+)$/);
+            if (!message || !turnMatch) return null;
+
+            return {
+                messageId: message.getAttribute("data-message-id") || turnMatch[1],
+                turnIndex: Number(turnMatch[1]),
+            };
+        }
 
         function getCurrentText(container) {
             return container.innerText.trim();
         }
 
+        const initialContainers = [...document.querySelectorAll(assistantOutputSelector)];
+        const startupTurnBoundary = initialContainers.reduce((highestTurn, container) => {
+            const identity = getMessageIdentity(container);
+            if (!identity) return highestTurn;
+
+            lastContents.set(identity.messageId, getCurrentText(container));
+            return Math.max(highestTurn, identity.turnIndex);
+        }, -1);
+
         function pollTexts() {
             const containers = document.querySelectorAll(assistantOutputSelector);
 
-            if (!initialScanDone) {
-                containers.forEach((container) => {
-                    lastContents.set(container, getCurrentText(container));
-                    ignoredInitialContainers.add(container);
-                });
-                initialScanDone = true;
-                return;
-            }
-
             containers.forEach((container) => {
+                const identity = getMessageIdentity(container);
+                if (!identity) return;
+
                 const currentText = getCurrentText(container);
-                const lastText = lastContents.get(container) || "";
+                const lastText = lastContents.get(identity.messageId) || "";
 
                 if (currentText && currentText !== lastText) {
-                    lastContents.set(container, currentText);
-                    if (ignoredInitialContainers.has(container)) {
-                        return;
-                    }
-                    window.onPartialOutput(currentText);
+                    lastContents.set(identity.messageId, currentText);
+
+                    // ChatGPT lazily prepends historical turns when the user
+                    // scrolls upward. Their DOM nodes are new, but their turn
+                    // indexes are at or below the startup boundary.
+                    if (identity.turnIndex <= startupTurnBoundary) return;
+
+                    window.onPartialOutput(identity.messageId, currentText);
                 }
             });
         }
 
         console.log("ChatGPT output monitor started");
-        pollTexts();
         setInterval(pollTexts, outputPollIntervalMs);
+        return startupTurnBoundary;
     }, {
         assistantOutputSelector: config.browser.assistantOutputSelector,
         outputPollIntervalMs: config.browser.outputPollIntervalMs,
     });
+    console.log("ChatGPT output monitor started after turn:", startupAssistantTurnBoundary);
 })();

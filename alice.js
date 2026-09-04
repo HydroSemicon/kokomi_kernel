@@ -5,6 +5,8 @@ import fetch from "node-fetch";
 import express from "express";
 import { spawn } from "child_process";
 import fs from "fs";
+import os from "os";
+import path from "path";
 import "dotenv/config";
 
 const config = JSON.parse(fs.readFileSync(new URL("./config.json", import.meta.url), "utf8"));
@@ -415,6 +417,138 @@ async function sendJsonToChatGPT(obj) {
     console.log("ChatGPT JSON sent:", json);
 }
 
+function getVisionMimeType(contentType, buffer) {
+    const mimeType = contentType?.split(";", 1)[0].trim().toLowerCase();
+    if (mimeType === "image/jpeg" || mimeType === "image/png" || mimeType === "image/webp") {
+        return mimeType;
+    }
+
+    if (buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) {
+        return "image/jpeg";
+    }
+    if (buffer.length >= 8 && buffer.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) {
+        return "image/png";
+    }
+    if (buffer.length >= 12 && buffer.toString("ascii", 0, 4) === "RIFF" && buffer.toString("ascii", 8, 12) === "WEBP") {
+        return "image/webp";
+    }
+
+    throw new Error(`snapshot returned unsupported content type: ${contentType || "missing"}`);
+}
+
+async function fetchVisionSnapshot() {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), config.vision.snapshotTimeoutMs);
+
+    try {
+        console.log("fetching snapshot for ChatGPT...");
+        const response = await fetch(config.vision.snapshotUrl, {
+            signal: controller.signal,
+        });
+        if (!response.ok) {
+            throw new Error(`snapshot fetch failed: ${response.status}`);
+        }
+
+        const buffer = Buffer.from(await response.arrayBuffer());
+        if (buffer.length === 0) {
+            throw new Error("snapshot was empty");
+        }
+        if (buffer.length > config.vision.maxImageBytes) {
+            throw new Error(`snapshot exceeded ${config.vision.maxImageBytes} bytes`);
+        }
+        const mimeType = getVisionMimeType(response.headers.get("content-type"), buffer);
+
+        return { buffer, mimeType };
+    } finally {
+        clearTimeout(timeout);
+    }
+}
+
+async function attachImageToChatGPT({ buffer, mimeType }) {
+    if (!page) {
+        throw new Error("ChatGPT page is not ready");
+    }
+
+    await page.bringToFront();
+    await page.waitForSelector(CHAT_INPUT_SELECTOR, { timeout: config.browser.inputTimeoutMs });
+
+    const attachmentStateBeforeUpload = await page.evaluate(({
+        chatInputSelector,
+        enabledSendButtonSelector,
+    }) => {
+        const input = document.querySelector(chatInputSelector);
+        const composer = input?.closest("form") || input?.parentElement?.parentElement?.parentElement;
+        const attachmentSelector = 'img, [data-testid*="attachment"], [data-testid*="file"]';
+        return {
+            attachmentCount: composer?.querySelectorAll(attachmentSelector).length || 0,
+            sendEnabled: Boolean(document.querySelector(enabledSendButtonSelector)),
+        };
+    }, {
+        chatInputSelector: CHAT_INPUT_SELECTOR,
+        enabledSendButtonSelector: config.browser.enabledSendButtonSelector,
+    });
+
+    const extensionByMimeType = {
+        "image/jpeg": ".jpg",
+        "image/png": ".png",
+        "image/webp": ".webp",
+    };
+    const tempDirectory = await fs.promises.mkdtemp(path.join(os.tmpdir(), "alice-vision-"));
+    const imagePath = path.join(tempDirectory, `snapshot${extensionByMimeType[mimeType]}`);
+
+    try {
+        await fs.promises.writeFile(imagePath, buffer);
+        const fileInput = await page.waitForSelector(config.browser.imageUploadSelector, {
+            timeout: config.browser.inputTimeoutMs,
+        });
+        if (!fileInput) {
+            throw new Error("ChatGPT image upload input was not found");
+        }
+
+        // ElementHandle.uploadFile uses CDP's DOM.setFileInputFiles internally.
+        // This avoids OS clipboard permissions while producing the same attached
+        // image state as pasting or selecting a file in the ChatGPT composer.
+        await fileInput.uploadFile(imagePath);
+
+        await page.waitForFunction(({
+            chatInputSelector,
+            enabledSendButtonSelector,
+            before,
+        }) => {
+            const input = document.querySelector(chatInputSelector);
+            const composer = input?.closest("form") || input?.parentElement?.parentElement?.parentElement;
+            const attachmentSelector = 'img, [data-testid*="attachment"], [data-testid*="file"]';
+            const attachmentCount = composer?.querySelectorAll(attachmentSelector).length || 0;
+            const sendEnabled = Boolean(document.querySelector(enabledSendButtonSelector));
+
+            return attachmentCount > before.attachmentCount || (!before.sendEnabled && sendEnabled);
+        }, {
+            timeout: config.vision.attachmentTimeoutMs,
+        }, {
+            chatInputSelector: CHAT_INPUT_SELECTOR,
+            enabledSendButtonSelector: config.browser.enabledSendButtonSelector,
+            before: attachmentStateBeforeUpload,
+        });
+    } finally {
+        await fs.promises.unlink(imagePath).catch(() => {});
+        await fs.promises.rmdir(tempDirectory).catch(() => {});
+    }
+
+    console.log("ChatGPT image attachment detected");
+}
+
+async function sendVisionImageToChatGPT(request) {
+    const snapshot = await fetchVisionSnapshot();
+    await attachImageToChatGPT(snapshot);
+    await sendJsonToChatGPT({
+        vision: {
+            task: request.params.task,
+            query: config.vision.defaultQuery,
+            input: "attached_image",
+        },
+    });
+}
+
 async function sendActionToPi(action) {
     const url =
         action.type === "tear"
@@ -538,15 +672,7 @@ async function executeAuditedPayload(payload) {
         for (const request of payload.requests) {
             if (typeof request === "object" && request.type === "vision") {
                 try {
-                    const query = config.vision.defaultQuery;
-                    const result = await runLLaVA(query);
-                    console.log("LLaVA:", result);
-                    await sendJsonToChatGPT({
-                        vision: {
-                            query,
-                            result,
-                        },
-                    });
+                    await sendVisionImageToChatGPT(request);
                 } catch (err) {
                     console.error("vision request failed:", err.message);
                 }
@@ -627,9 +753,14 @@ app.post(config.routes.userInput, async (req, res) => {
     return res.json({ status: "OK" });
 });
 
-/* ---------------------------
-   LLaVA
---------------------------- */
+/* ==========================================================================
+   LEGACY LLAVA START
+
+   This path is intentionally kept for reference/fallback, but it is no longer
+   called by the active vision request flow. The active flow pastes the camera
+   image directly into ChatGPT so visual features and reasoning stay in the
+   same multimodal model invocation.
+============================================================================ */
 async function runLLaVA(prompt) {
     const instruction = config.vision.instructionTemplate.replace("{maxWords}", config.vision.maxWords);
     console.log("fetching snapshot...");
@@ -656,6 +787,7 @@ async function runLLaVA(prompt) {
     const data = await res.json();
     return data.response;
 }
+/* ============================ LEGACY LLAVA END ============================ */
 
 /* ---------------------------
    Puppeteer boot and ChatGPT monitor

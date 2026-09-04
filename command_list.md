@@ -99,11 +99,12 @@ Sensor | Temp: 24.31 C Hum: 51.22% Press: 1008.14 hPa
 }
 
 
-Vision result for "...": 
+Vision input with the camera image attached to the same message:
 {
   "vision": {
+    "task": "describe_scene",
     "query": "describe the scene",
-    "result": "..."
+    "input": "attached_image"
   }
 }
 

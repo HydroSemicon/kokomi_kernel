@@ -4,6 +4,7 @@
         "assistantOutputSelector": ".markdown.prose",
         "sendButtonSelector": "button[data-testid=\"send-button\"]",
         "enabledSendButtonSelector": "button[data-testid=\"send-button\"]:not([disabled])",
+        "imageUploadSelector": "input[data-testid=\"upload-photos-input\"]",
         "remoteDebuggingUrl": "http://127.0.0.1:9222",
         "chatgptUrl": "https://chatgpt.com/",
         "existingPageUrlIncludes": ["chatgpt.com", "chat.openai.com"],
@@ -93,6 +94,9 @@
 
     "vision": {
         "snapshotUrl": "http://localhost:5000/snapshot",
+        "snapshotTimeoutMs": 10000,
+        "attachmentTimeoutMs": 60000,
+        "maxImageBytes": 10485760,
         "generateUrl": "http://localhost:11434/api/generate",
         "model": "llava",
         "stream": false,

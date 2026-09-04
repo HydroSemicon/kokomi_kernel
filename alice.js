@@ -415,6 +415,168 @@ async function sendJsonToChatGPT(obj) {
     console.log("ChatGPT JSON sent:", json);
 }
 
+function getVisionMimeType(contentType, buffer) {
+    const mimeType = contentType?.split(";", 1)[0].trim().toLowerCase();
+    if (mimeType === "image/jpeg" || mimeType === "image/png" || mimeType === "image/webp") {
+        return mimeType;
+    }
+
+    if (buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) {
+        return "image/jpeg";
+    }
+    if (buffer.length >= 8 && buffer.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) {
+        return "image/png";
+    }
+    if (buffer.length >= 12 && buffer.toString("ascii", 0, 4) === "RIFF" && buffer.toString("ascii", 8, 12) === "WEBP") {
+        return "image/webp";
+    }
+
+    throw new Error(`snapshot returned unsupported content type: ${contentType || "missing"}`);
+}
+
+async function fetchVisionSnapshot() {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), config.vision.snapshotTimeoutMs);
+
+    try {
+        console.log("fetching snapshot for ChatGPT...");
+        const response = await fetch(config.vision.snapshotUrl, {
+            signal: controller.signal,
+        });
+        if (!response.ok) {
+            throw new Error(`snapshot fetch failed: ${response.status}`);
+        }
+
+        const buffer = Buffer.from(await response.arrayBuffer());
+        if (buffer.length === 0) {
+            throw new Error("snapshot was empty");
+        }
+        if (buffer.length > config.vision.maxImageBytes) {
+            throw new Error(`snapshot exceeded ${config.vision.maxImageBytes} bytes`);
+        }
+        const mimeType = getVisionMimeType(response.headers.get("content-type"), buffer);
+
+        return { buffer, mimeType };
+    } finally {
+        clearTimeout(timeout);
+    }
+}
+
+async function pasteImageToChatGPT({ buffer, mimeType }) {
+    if (!page) {
+        throw new Error("ChatGPT page is not ready");
+    }
+
+    await page.bringToFront();
+    await page.waitForSelector(CHAT_INPUT_SELECTOR, { timeout: config.browser.inputTimeoutMs });
+
+    const origin = new URL(page.url()).origin;
+    await page.browserContext().overridePermissions(origin, ["clipboard-read", "clipboard-write"]);
+
+    const attachmentStateBeforePaste = await page.evaluate(({
+        chatInputSelector,
+        enabledSendButtonSelector,
+    }) => {
+        const input = document.querySelector(chatInputSelector);
+        const composer = input?.closest("form") || input?.parentElement?.parentElement?.parentElement;
+        const attachmentSelector = 'img, [data-testid*="attachment"], [data-testid*="file"]';
+        return {
+            attachmentCount: composer?.querySelectorAll(attachmentSelector).length || 0,
+            sendEnabled: Boolean(document.querySelector(enabledSendButtonSelector)),
+        };
+    }, {
+        chatInputSelector: CHAT_INPUT_SELECTOR,
+        enabledSendButtonSelector: config.browser.enabledSendButtonSelector,
+    });
+
+    const base64 = buffer.toString("base64");
+    await page.evaluate(async ({ imageBase64, sourceMimeType }) => {
+        const binary = atob(imageBase64);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i += 1) {
+            bytes[i] = binary.charCodeAt(i);
+        }
+
+        const sourceBlob = new Blob([bytes], { type: sourceMimeType });
+        let clipboardBlob = sourceBlob;
+
+        // Chromium guarantees image/png clipboard support. Convert JPEG/WebP snapshots
+        // in the page before issuing the real Ctrl+V event through CDP.
+        if (sourceMimeType !== "image/png") {
+            const bitmap = await createImageBitmap(sourceBlob);
+            const canvas = document.createElement("canvas");
+            canvas.width = bitmap.width;
+            canvas.height = bitmap.height;
+            const context = canvas.getContext("2d");
+            if (!context) {
+                bitmap.close();
+                throw new Error("failed to create canvas context for clipboard image");
+            }
+            context.drawImage(bitmap, 0, 0);
+            bitmap.close();
+
+            clipboardBlob = await new Promise((resolve, reject) => {
+                canvas.toBlob((blob) => {
+                    if (blob) {
+                        resolve(blob);
+                    } else {
+                        reject(new Error("failed to convert snapshot to PNG"));
+                    }
+                }, "image/png");
+            });
+        }
+
+        await navigator.clipboard.write([
+            new ClipboardItem({ "image/png": clipboardBlob }),
+        ]);
+    }, {
+        imageBase64: base64,
+        sourceMimeType: mimeType,
+    });
+
+    await page.focus(CHAT_INPUT_SELECTOR);
+    await page.keyboard.down("Control");
+    try {
+        await page.keyboard.press("v");
+    } finally {
+        await page.keyboard.up("Control");
+    }
+
+    await page.waitForFunction(({
+        chatInputSelector,
+        enabledSendButtonSelector,
+        before,
+    }) => {
+        const input = document.querySelector(chatInputSelector);
+        const composer = input?.closest("form") || input?.parentElement?.parentElement?.parentElement;
+        const attachmentSelector = 'img, [data-testid*="attachment"], [data-testid*="file"]';
+        const attachmentCount = composer?.querySelectorAll(attachmentSelector).length || 0;
+        const sendEnabled = Boolean(document.querySelector(enabledSendButtonSelector));
+
+        return attachmentCount > before.attachmentCount || (!before.sendEnabled && sendEnabled);
+    }, {
+        timeout: config.vision.attachmentTimeoutMs,
+    }, {
+        chatInputSelector: CHAT_INPUT_SELECTOR,
+        enabledSendButtonSelector: config.browser.enabledSendButtonSelector,
+        before: attachmentStateBeforePaste,
+    });
+
+    console.log("ChatGPT image attachment detected");
+}
+
+async function sendVisionImageToChatGPT(request) {
+    const snapshot = await fetchVisionSnapshot();
+    await pasteImageToChatGPT(snapshot);
+    await sendJsonToChatGPT({
+        vision: {
+            task: request.params.task,
+            query: config.vision.defaultQuery,
+            input: "attached_image",
+        },
+    });
+}
+
 async function sendActionToPi(action) {
     const url =
         action.type === "tear"
@@ -538,15 +700,7 @@ async function executeAuditedPayload(payload) {
         for (const request of payload.requests) {
             if (typeof request === "object" && request.type === "vision") {
                 try {
-                    const query = config.vision.defaultQuery;
-                    const result = await runLLaVA(query);
-                    console.log("LLaVA:", result);
-                    await sendJsonToChatGPT({
-                        vision: {
-                            query,
-                            result,
-                        },
-                    });
+                    await sendVisionImageToChatGPT(request);
                 } catch (err) {
                     console.error("vision request failed:", err.message);
                 }
@@ -627,9 +781,14 @@ app.post(config.routes.userInput, async (req, res) => {
     return res.json({ status: "OK" });
 });
 
-/* ---------------------------
-   LLaVA
---------------------------- */
+/* ==========================================================================
+   LEGACY LLAVA START
+
+   This path is intentionally kept for reference/fallback, but it is no longer
+   called by the active vision request flow. The active flow pastes the camera
+   image directly into ChatGPT so visual features and reasoning stay in the
+   same multimodal model invocation.
+============================================================================ */
 async function runLLaVA(prompt) {
     const instruction = config.vision.instructionTemplate.replace("{maxWords}", config.vision.maxWords);
     console.log("fetching snapshot...");
@@ -656,6 +815,7 @@ async function runLLaVA(prompt) {
     const data = await res.json();
     return data.response;
 }
+/* ============================ LEGACY LLAVA END ============================ */
 
 /* ---------------------------
    Puppeteer boot and ChatGPT monitor

@@ -191,11 +191,12 @@ All three:
   }
 }
 
-When sending vision result:
+When sending vision input, attach the camera image to the same message:
 {
   "vision": {
+    "task": "describe_scene",
     "query": "describe the scene",
-    "result": "..."
+    "input": "attached_image"
   }
 }
 
@@ -221,7 +222,7 @@ Implementation requirements:
 10. Keep the existing Puppeteer browser setup.
 11. Keep the existing YOLO Express endpoint.
 12. Keep existing BME280 polling.
-13. Keep the existing runLLaVA function, but update the message sent back to ChatGPT to JSON.
+13. Keep the existing runLLaVA function as a clearly marked legacy fallback, but do not call it from the active vision path.
 
 Raspberry Pi endpoints:
 Use existing paths but send JSON.
@@ -268,8 +269,9 @@ Request execution:
   - Include corresponding units only.
   - Send the result to ChatGPT as JSON.
 - If requests include vision describe_scene:
-  - call runLLaVA("describe the scene")
-  - send the result to ChatGPT as JSON.
+  - fetch the image from the vision snapshot endpoint.
+  - paste the image into ChatGPT and send it with the vision input JSON.
+  - do not convert the image to a text description first.
 
 Speech:
 - If audited JSON contains speech:

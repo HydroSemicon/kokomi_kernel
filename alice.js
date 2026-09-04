@@ -5,6 +5,8 @@ import fetch from "node-fetch";
 import express from "express";
 import { spawn } from "child_process";
 import fs from "fs";
+import os from "os";
+import path from "path";
 import "dotenv/config";
 
 const config = JSON.parse(fs.readFileSync(new URL("./config.json", import.meta.url), "utf8"));
@@ -462,7 +464,7 @@ async function fetchVisionSnapshot() {
     }
 }
 
-async function pasteImageToChatGPT({ buffer, mimeType }) {
+async function attachImageToChatGPT({ buffer, mimeType }) {
     if (!page) {
         throw new Error("ChatGPT page is not ready");
     }
@@ -470,10 +472,7 @@ async function pasteImageToChatGPT({ buffer, mimeType }) {
     await page.bringToFront();
     await page.waitForSelector(CHAT_INPUT_SELECTOR, { timeout: config.browser.inputTimeoutMs });
 
-    const origin = new URL(page.url()).origin;
-    await page.browserContext().overridePermissions(origin, ["clipboard-read", "clipboard-write"]);
-
-    const attachmentStateBeforePaste = await page.evaluate(({
+    const attachmentStateBeforeUpload = await page.evaluate(({
         chatInputSelector,
         enabledSendButtonSelector,
     }) => {
@@ -489,85 +488,58 @@ async function pasteImageToChatGPT({ buffer, mimeType }) {
         enabledSendButtonSelector: config.browser.enabledSendButtonSelector,
     });
 
-    const base64 = buffer.toString("base64");
-    await page.evaluate(async ({ imageBase64, sourceMimeType }) => {
-        const binary = atob(imageBase64);
-        const bytes = new Uint8Array(binary.length);
-        for (let i = 0; i < binary.length; i += 1) {
-            bytes[i] = binary.charCodeAt(i);
-        }
+    const extensionByMimeType = {
+        "image/jpeg": ".jpg",
+        "image/png": ".png",
+        "image/webp": ".webp",
+    };
+    const tempDirectory = await fs.promises.mkdtemp(path.join(os.tmpdir(), "alice-vision-"));
+    const imagePath = path.join(tempDirectory, `snapshot${extensionByMimeType[mimeType]}`);
 
-        const sourceBlob = new Blob([bytes], { type: sourceMimeType });
-        let clipboardBlob = sourceBlob;
-
-        // Chromium guarantees image/png clipboard support. Convert JPEG/WebP snapshots
-        // in the page before issuing the real Ctrl+V event through CDP.
-        if (sourceMimeType !== "image/png") {
-            const bitmap = await createImageBitmap(sourceBlob);
-            const canvas = document.createElement("canvas");
-            canvas.width = bitmap.width;
-            canvas.height = bitmap.height;
-            const context = canvas.getContext("2d");
-            if (!context) {
-                bitmap.close();
-                throw new Error("failed to create canvas context for clipboard image");
-            }
-            context.drawImage(bitmap, 0, 0);
-            bitmap.close();
-
-            clipboardBlob = await new Promise((resolve, reject) => {
-                canvas.toBlob((blob) => {
-                    if (blob) {
-                        resolve(blob);
-                    } else {
-                        reject(new Error("failed to convert snapshot to PNG"));
-                    }
-                }, "image/png");
-            });
-        }
-
-        await navigator.clipboard.write([
-            new ClipboardItem({ "image/png": clipboardBlob }),
-        ]);
-    }, {
-        imageBase64: base64,
-        sourceMimeType: mimeType,
-    });
-
-    await page.focus(CHAT_INPUT_SELECTOR);
-    await page.keyboard.down("Control");
     try {
-        await page.keyboard.press("v");
+        await fs.promises.writeFile(imagePath, buffer);
+        const fileInput = await page.waitForSelector(config.browser.imageUploadSelector, {
+            timeout: config.browser.inputTimeoutMs,
+        });
+        if (!fileInput) {
+            throw new Error("ChatGPT image upload input was not found");
+        }
+
+        // ElementHandle.uploadFile uses CDP's DOM.setFileInputFiles internally.
+        // This avoids OS clipboard permissions while producing the same attached
+        // image state as pasting or selecting a file in the ChatGPT composer.
+        await fileInput.uploadFile(imagePath);
+
+        await page.waitForFunction(({
+            chatInputSelector,
+            enabledSendButtonSelector,
+            before,
+        }) => {
+            const input = document.querySelector(chatInputSelector);
+            const composer = input?.closest("form") || input?.parentElement?.parentElement?.parentElement;
+            const attachmentSelector = 'img, [data-testid*="attachment"], [data-testid*="file"]';
+            const attachmentCount = composer?.querySelectorAll(attachmentSelector).length || 0;
+            const sendEnabled = Boolean(document.querySelector(enabledSendButtonSelector));
+
+            return attachmentCount > before.attachmentCount || (!before.sendEnabled && sendEnabled);
+        }, {
+            timeout: config.vision.attachmentTimeoutMs,
+        }, {
+            chatInputSelector: CHAT_INPUT_SELECTOR,
+            enabledSendButtonSelector: config.browser.enabledSendButtonSelector,
+            before: attachmentStateBeforeUpload,
+        });
     } finally {
-        await page.keyboard.up("Control");
+        await fs.promises.unlink(imagePath).catch(() => {});
+        await fs.promises.rmdir(tempDirectory).catch(() => {});
     }
-
-    await page.waitForFunction(({
-        chatInputSelector,
-        enabledSendButtonSelector,
-        before,
-    }) => {
-        const input = document.querySelector(chatInputSelector);
-        const composer = input?.closest("form") || input?.parentElement?.parentElement?.parentElement;
-        const attachmentSelector = 'img, [data-testid*="attachment"], [data-testid*="file"]';
-        const attachmentCount = composer?.querySelectorAll(attachmentSelector).length || 0;
-        const sendEnabled = Boolean(document.querySelector(enabledSendButtonSelector));
-
-        return attachmentCount > before.attachmentCount || (!before.sendEnabled && sendEnabled);
-    }, {
-        timeout: config.vision.attachmentTimeoutMs,
-    }, {
-        chatInputSelector: CHAT_INPUT_SELECTOR,
-        enabledSendButtonSelector: config.browser.enabledSendButtonSelector,
-        before: attachmentStateBeforePaste,
-    });
 
     console.log("ChatGPT image attachment detected");
 }
 
 async function sendVisionImageToChatGPT(request) {
     const snapshot = await fetchVisionSnapshot();
-    await pasteImageToChatGPT(snapshot);
+    await attachImageToChatGPT(snapshot);
     await sendJsonToChatGPT({
         vision: {
             task: request.params.task,

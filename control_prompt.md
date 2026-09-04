@@ -221,6 +221,7 @@ Treat the value of "user_input" as the user's message.
 
 {
   "event": {
+    "event_id": "84972a7f330844b982d931f06be840ab",
     "source": "deepsort",
     "type": "person_appeared",
     "track_id": "7",
@@ -231,7 +232,7 @@ Treat the value of "user_input" as the user's message.
       "person_id": null,
       "name": null,
       "distance": null,
-      "threshold": 0.45
+      "threshold": 0.55
     },
     "message": "A person has appeared. Identity recognition is in progress."
   }

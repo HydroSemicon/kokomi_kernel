@@ -127,6 +127,7 @@ Vision input with the camera image attached to the same message:
 DeepSORT: 人物追跡イベント
 {
   "event": {
+    "event_id": "84972a7f330844b982d931f06be840ab",
     "source": "deepsort",
     "type": "person_appeared",
     "track_id": "7",
@@ -137,7 +138,7 @@ DeepSORT: 人物追跡イベント
       "person_id": null,
       "name": null,
       "distance": null,
-      "threshold": 0.45
+      "threshold": 0.55
     },
     "message": "A person has appeared. Identity recognition is in progress."
   }

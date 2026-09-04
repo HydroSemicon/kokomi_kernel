@@ -96,6 +96,7 @@
         "snapshotUrl": "http://localhost:5000/snapshot",
         "snapshotTimeoutMs": 10000,
         "attachmentTimeoutMs": 60000,
+        "tempFileRetentionMs": 60000,
         "maxImageBytes": 10485760,
         "generateUrl": "http://localhost:11434/api/generate",
         "model": "llava",

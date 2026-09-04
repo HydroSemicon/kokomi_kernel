@@ -50,6 +50,20 @@ colorはHEXカラーコード．
   ]
 }
 
+登録人物照合用の顔記憶
+{
+  "actions": [
+    {
+      "type": "remember_person",
+      "params": {
+        "track_id": "7",
+        "name": "たかん"
+      }
+    }
+  ]
+}
+track_idは直近のDeepSORTイベントから取得する．本人が名前を名乗るか，明示的に記憶を依頼した場合だけ実行する．
+
 
 @THP@
 {
@@ -110,15 +124,26 @@ Vision input with the camera image attached to the same message:
 
 
 
-DeepSORT: 人間が現れました
-@PERSON_EVENT@
+DeepSORT: 人物追跡イベント
 {
   "event": {
     "source": "deepsort",
     "type": "person_appeared",
-    "message": "A person has appeared."
+    "track_id": "7",
+    "timestamp": "2026-09-05T12:34:56+00:00",
+    "position": "center",
+    "identity": {
+      "status": "pending",
+      "person_id": null,
+      "name": null,
+      "distance": null,
+      "threshold": 0.45
+    },
+    "message": "A person has appeared. Identity recognition is in progress."
   }
 }
+typeはperson_appeared，person_recognized，person_unknown，person_enrolled，person_disappearedのいずれか．
+登録人物を認識した場合のみidentity.statusがrecognizedとなり，nameとperson_idが設定される．
 
 ユーザー入力
 {

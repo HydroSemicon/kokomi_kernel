@@ -330,6 +330,26 @@ function validateActions(actions) {
             continue;
         }
 
+        if (action.type === "remember_person") {
+            if (!hasExactlyKeys(action.params, ["track_id", "name"])) {
+                return "remember_person params must contain exactly track_id and name";
+            }
+            const trackId = action.params.track_id;
+            if ((typeof trackId !== "string" && !Number.isInteger(trackId)) || String(trackId).trim() === "") {
+                return "remember_person track_id must be a non-empty string or integer";
+            }
+            if (typeof action.params.name !== "string" || action.params.name.trim() === "") {
+                return "remember_person name must be a non-empty string";
+            }
+            if (action.params.name.trim().length > config.faceMemory.maxNameLength) {
+                return `remember_person name must be ${config.faceMemory.maxNameLength} characters or fewer`;
+            }
+            if ([...action.params.name].some((character) => character.charCodeAt(0) < 32)) {
+                return "remember_person name must not contain control characters";
+            }
+            continue;
+        }
+
         return `unknown action type: ${action.type}`;
     }
 
@@ -600,13 +620,143 @@ async function sendBlueskyPost(action) {
     console.log("posted to Bluesky:", text);
 }
 
+async function rememberPerson(action) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), config.faceMemory.requestTimeoutMs);
+
+    try {
+        const response = await fetch(config.faceMemory.enrollUrl, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                track_id: String(action.params.track_id),
+                name: action.params.name.trim(),
+            }),
+            signal: controller.signal,
+        });
+        const body = await response.json().catch(() => ({}));
+        if (!response.ok) {
+            throw new Error(`face enrollment failed: ${response.status} ${body.error || "unknown error"}`);
+        }
+        console.log("remembered person:", body.person);
+    } finally {
+        clearTimeout(timeout);
+    }
+}
+
 async function executeAction(action) {
     if (action.type === "bluesky_post") {
         await sendBlueskyPost(action);
         return;
     }
 
+    if (action.type === "remember_person") {
+        await rememberPerson(action);
+        return;
+    }
+
     await sendActionToPi(action);
+}
+
+function normalizeVisionIdentity(identity) {
+    if (!isPlainObject(identity) || !hasExactlyKeys(identity, ["status", "person_id", "name", "distance", "threshold"])) {
+        throw new Error("vision identity has an invalid shape");
+    }
+    if (!["pending", "recognized", "unknown", "unavailable"].includes(identity.status)) {
+        throw new Error("vision identity status is invalid");
+    }
+    if (identity.person_id !== null && typeof identity.person_id !== "string") {
+        throw new Error("vision identity person_id must be a string or null");
+    }
+    if (identity.name !== null && typeof identity.name !== "string") {
+        throw new Error("vision identity name must be a string or null");
+    }
+    if (identity.distance !== null && (typeof identity.distance !== "number" || !Number.isFinite(identity.distance))) {
+        throw new Error("vision identity distance must be a finite number or null");
+    }
+    if (typeof identity.threshold !== "number" || !Number.isFinite(identity.threshold) || identity.threshold <= 0) {
+        throw new Error("vision identity threshold must be a positive finite number");
+    }
+    if (identity.status === "recognized") {
+        if (!identity.person_id || !identity.name || identity.distance === null) {
+            throw new Error("recognized vision identity requires person_id, name, and distance");
+        }
+        if (identity.distance > identity.threshold) {
+            throw new Error("recognized vision identity distance exceeds threshold");
+        }
+    } else if (identity.person_id !== null || identity.name !== null || identity.distance !== null) {
+        throw new Error("unrecognized vision identity must not contain identity data");
+    }
+    return { ...identity };
+}
+
+function normalizeVisionEvent(body) {
+    // Accept the previous Python payload during rolling upgrades.
+    if (body.event === "person") {
+        if (!["appeared", "disappeared"].includes(body.action)) {
+            throw new Error("legacy vision event action is invalid");
+        }
+        if ((typeof body.track_id !== "string" && !Number.isInteger(body.track_id)) || String(body.track_id).trim() === "") {
+            throw new Error("legacy vision event track_id is invalid");
+        }
+        return {
+            source: "deepsort",
+            type: `person_${body.action}`,
+            track_id: String(body.track_id),
+            timestamp: new Date().toISOString(),
+            identity: {
+                status: "unavailable",
+                person_id: null,
+                name: null,
+                distance: null,
+                threshold: 0.45,
+            },
+            message: `A person has ${body.action}.`,
+        };
+    }
+
+    if (!isPlainObject(body.event)) {
+        throw new Error("vision event must be an object");
+    }
+    const event = body.event;
+    const allowedKeys = ["source", "type", "track_id", "timestamp", "identity", "message", "position"];
+    if (Object.keys(event).some((key) => !allowedKeys.includes(key))) {
+        throw new Error("vision event contains an unknown field");
+    }
+    for (const key of ["source", "type", "track_id", "timestamp", "identity", "message"]) {
+        if (!Object.prototype.hasOwnProperty.call(event, key)) {
+            throw new Error(`vision event is missing ${key}`);
+        }
+    }
+    if (event.source !== "deepsort") {
+        throw new Error("vision event source must be deepsort");
+    }
+    if (!["person_appeared", "person_disappeared", "person_recognized", "person_unknown", "person_enrolled"].includes(event.type)) {
+        throw new Error("vision event type is invalid");
+    }
+    if ((typeof event.track_id !== "string" && !Number.isInteger(event.track_id)) || String(event.track_id).trim() === "") {
+        throw new Error("vision event track_id is invalid");
+    }
+    if (typeof event.timestamp !== "string" || Number.isNaN(Date.parse(event.timestamp))) {
+        throw new Error("vision event timestamp is invalid");
+    }
+    if (typeof event.message !== "string" || event.message.trim() === "") {
+        throw new Error("vision event message is invalid");
+    }
+    if (event.position !== undefined && !["left", "center", "right"].includes(event.position)) {
+        throw new Error("vision event position is invalid");
+    }
+
+    const normalized = {
+        source: event.source,
+        type: event.type,
+        track_id: String(event.track_id),
+        timestamp: event.timestamp,
+        identity: normalizeVisionIdentity(event.identity),
+        message: event.message,
+    };
+    if (event.position !== undefined) normalized.position = event.position;
+    return normalized;
 }
 
 function readSensorField(field) {
@@ -689,10 +839,24 @@ app.use(express.json());
 
 app.post(config.routes.yoloEvent, async (req, res) => {
     console.log("YOLO event:", req.body);
-    await sendJsonToChatGPT({
-        event: config.events.personAppeared,
-    });
-    res.sendStatus(200);
+    if (!page) {
+        return res.status(503).json({ error: "ChatGPT page is not ready" });
+    }
+    let event;
+    try {
+        event = normalizeVisionEvent(req.body);
+    } catch (err) {
+        console.log("rejected vision event:", err.message, req.body);
+        return res.status(400).json({ error: err.message });
+    }
+
+    try {
+        await sendJsonToChatGPT({ event });
+        return res.sendStatus(200);
+    } catch (err) {
+        console.error("vision event delivery failed:", err.message);
+        return res.status(503).json({ error: "ChatGPT delivery failed" });
+    }
 });
 
 app.post(config.routes.touchSensorInput, async (req, res) => {

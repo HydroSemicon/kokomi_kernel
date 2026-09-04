@@ -106,18 +106,16 @@
         "instructionTemplate": "Describe the scene in English in 1-2 sentences, maximum {maxWords} words. Focus only on important objects, people, and actions. Do not repeat details.\n"
     },
 
+    "faceMemory": {
+        "enrollUrl": "http://localhost:5000/faces/enroll",
+        "requestTimeoutMs": 10000,
+        "maxNameLength": 80
+    },
+
     "routes": {
         "yoloEvent": "/yolo_event",
         "touchSensorInput": "/touch_sensor_input",
         "userInput": "/user_input"
-    },
-
-    "events": {
-        "personAppeared": {
-            "source": "deepsort",
-            "type": "person_appeared",
-            "message": "A person has appeared."
-        }
     },
 
     "server": {

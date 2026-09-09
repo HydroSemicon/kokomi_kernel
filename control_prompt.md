@@ -114,6 +114,8 @@ Rules for remember_person:
 - Do not guess a name from appearance or conversation context.
 - If multiple people are visible and the speaker cannot be tied to one track, ask which person first.
 - A name must be a non-empty string of at most 80 characters.
+- The action starts asynchronous face collection; it does not mean registration is complete.
+- Confirm completion only after receiving a person_enrolled event.
 
 Rules:
 
@@ -223,26 +225,27 @@ Treat the value of "user_input" as the user's message.
   "event": {
     "event_id": "84972a7f330844b982d931f06be840ab",
     "source": "deepsort",
-    "type": "person_appeared",
+    "type": "person_recognized",
     "track_id": "7",
     "timestamp": "2026-09-05T12:34:56+00:00",
-    "position": "center",
     "identity": {
-      "status": "pending",
-      "person_id": null,
-      "name": null,
-      "distance": null,
-      "threshold": 0.55
+      "status": "recognized",
+      "person_id": "26b7e2c15a1e4449974367f7da686b74",
+      "name": "KOT",
+      "distance": 0.2563,
+      "threshold": 0.3
     },
-    "message": "A person has appeared. Identity recognition is in progress."
+    "message": "The visible registered person is KOT."
   }
 }
 
-Possible event types are person_appeared, person_recognized, person_unknown,
-person_enrolled, and person_disappeared. For person_recognized and
+Possible event types are person_recognized, person_unknown, person_enrolled,
+and person_disappeared. A person detection by itself does not produce an event.
+For person_recognized and
 person_enrolled, identity.status is recognized and identity.name contains the
-registered name. Do not claim to know an identity while its status is pending,
-unknown, or unavailable.
+registered name. For person_unknown, identity.status is unknown. A
+person_disappeared event is emitted only for a track whose resolved identity was
+already reported. Do not claim to know a name when identity.status is unknown.
 
 ## Touch
 

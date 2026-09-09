@@ -62,7 +62,7 @@ colorはHEXカラーコード．
     }
   ]
 }
-track_idは直近のDeepSORTイベントから取得する．本人が名前を名乗るか，明示的に記憶を依頼した場合だけ実行する．
+track_idは直近のDeepSORTイベントから取得する．本人が名前を名乗るか，明示的に記憶を依頼した場合だけ実行する．このアクションは非同期の顔収集を開始するものであり，登録完了はperson_enrolledイベントで確認する．
 
 
 @THP@
@@ -129,22 +129,21 @@ DeepSORT: 人物追跡イベント
   "event": {
     "event_id": "84972a7f330844b982d931f06be840ab",
     "source": "deepsort",
-    "type": "person_appeared",
+    "type": "person_recognized",
     "track_id": "7",
     "timestamp": "2026-09-05T12:34:56+00:00",
-    "position": "center",
     "identity": {
-      "status": "pending",
-      "person_id": null,
-      "name": null,
-      "distance": null,
-      "threshold": 0.55
+      "status": "recognized",
+      "person_id": "26b7e2c15a1e4449974367f7da686b74",
+      "name": "KOT",
+      "distance": 0.2563,
+      "threshold": 0.3
     },
-    "message": "A person has appeared. Identity recognition is in progress."
+    "message": "The visible registered person is KOT."
   }
 }
-typeはperson_appeared，person_recognized，person_unknown，person_enrolled，person_disappearedのいずれか．
-登録人物を認識した場合のみidentity.statusがrecognizedとなり，nameとperson_idが設定される．
+typeはperson_recognized，person_unknown，person_enrolled，person_disappearedのいずれか．
+人物を検出しただけではイベントは送られない．登録人物を認識した場合はidentity.statusがrecognizedとなり，nameとperson_idが設定される．未登録人物として確定した場合はidentity.statusがunknownとなる．person_disappearedは認識結果を通知済みのトラックに対してのみ送られる．
 
 ユーザー入力
 {

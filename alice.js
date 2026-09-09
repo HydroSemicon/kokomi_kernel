@@ -685,7 +685,10 @@ async function rememberPerson(action) {
         if (!response.ok) {
             throw new Error(`face enrollment failed: ${response.status} ${body.error || "unknown error"}`);
         }
-        console.log("remembered person:", body.person);
+        if (body.status !== "collecting" || !isPlainObject(body.person) || body.person.status !== "collecting") {
+            throw new Error("face enrollment returned an unexpected response");
+        }
+        console.log("face enrollment started:", body.person);
     } finally {
         clearTimeout(timeout);
     }
@@ -738,31 +741,6 @@ function normalizeVisionIdentity(identity) {
 }
 
 function normalizeVisionEvent(body) {
-    // Accept the previous Python payload during rolling upgrades.
-    if (body.event === "person") {
-        if (!["appeared", "disappeared"].includes(body.action)) {
-            throw new Error("legacy vision event action is invalid");
-        }
-        if ((typeof body.track_id !== "string" && !Number.isInteger(body.track_id)) || String(body.track_id).trim() === "") {
-            throw new Error("legacy vision event track_id is invalid");
-        }
-        return {
-            event_id: `legacy:${body.action}:${String(body.track_id)}`,
-            source: "deepsort",
-            type: `person_${body.action}`,
-            track_id: String(body.track_id),
-            timestamp: new Date().toISOString(),
-            identity: {
-                status: "unavailable",
-                person_id: null,
-                name: null,
-                distance: null,
-                threshold: 0.45,
-            },
-            message: `A person has ${body.action}.`,
-        };
-    }
-
     if (!isPlainObject(body.event)) {
         throw new Error("vision event must be an object");
     }
@@ -782,7 +760,7 @@ function normalizeVisionEvent(body) {
     if (typeof event.event_id !== "string" || !/^[A-Za-z0-9:_-]{1,128}$/.test(event.event_id)) {
         throw new Error("vision event event_id is invalid");
     }
-    if (!["person_appeared", "person_disappeared", "person_recognized", "person_unknown", "person_enrolled"].includes(event.type)) {
+    if (!["person_disappeared", "person_recognized", "person_unknown", "person_enrolled"].includes(event.type)) {
         throw new Error("vision event type is invalid");
     }
     if ((typeof event.track_id !== "string" && !Number.isInteger(event.track_id)) || String(event.track_id).trim() === "") {
@@ -798,13 +776,24 @@ function normalizeVisionEvent(body) {
         throw new Error("vision event position is invalid");
     }
 
+    const identity = normalizeVisionIdentity(event.identity);
+    if (["person_recognized", "person_enrolled"].includes(event.type) && identity.status !== "recognized") {
+        throw new Error(`${event.type} requires a recognized identity`);
+    }
+    if (event.type === "person_unknown" && identity.status !== "unknown") {
+        throw new Error("person_unknown requires an unknown identity");
+    }
+    if (event.type === "person_disappeared" && !["recognized", "unknown"].includes(identity.status)) {
+        throw new Error("person_disappeared requires a resolved identity");
+    }
+
     const normalized = {
         event_id: event.event_id,
         source: event.source,
         type: event.type,
         track_id: String(event.track_id),
         timestamp: event.timestamp,
-        identity: normalizeVisionIdentity(event.identity),
+        identity,
         message: event.message,
     };
     if (event.position !== undefined) normalized.position = event.position;

@@ -110,6 +110,8 @@ BSKY_PASSWORD=your_app_password
 
 リポジトリ同梱の `config.json` にはローカルネットワーク用の接続先が入っています。そのままでは別環境から利用できません。
 
+`remember_person`は顔登録APIから`202 collecting`を受け取ると正常な収集開始として扱います。この時点では登録完了ではありません。バックグラウンド収集が成功すると、ビジョンモジュールから`person_enrolled`イベントが届きます。
+
 ### 4. ChatGPTを準備
 
 1. Chromeをリモートデバッグ付きで起動します。
@@ -198,23 +200,22 @@ DeepSORTの人物追跡・顔認識イベントを受け取ります。
   "event": {
     "event_id": "84972a7f330844b982d931f06be840ab",
     "source": "deepsort",
-    "type": "person_appeared",
+    "type": "person_recognized",
     "track_id": "7",
     "timestamp": "2026-09-05T12:34:56+00:00",
-    "position": "center",
     "identity": {
-      "status": "pending",
-      "person_id": null,
-      "name": null,
-      "distance": null,
-      "threshold": 0.55
+      "status": "recognized",
+      "person_id": "26b7e2c15a1e4449974367f7da686b74",
+      "name": "KOT",
+      "distance": 0.2563,
+      "threshold": 0.3
     },
-    "message": "A person has appeared. Identity recognition is in progress."
+    "message": "The visible registered person is KOT."
   }
 }
 ```
 
-詳しいイベント種別とJSON形式は [`command_list.md`](command_list.md) を参照してください。同じ `event_id` は重複イベントとして無視されます。
+人物を検出しただけではイベントは送られません。受理するイベントは`person_recognized`、`person_unknown`、`person_enrolled`、`person_disappeared`です。`person_disappeared`は認識結果または登録完了を通知済みの人物についてのみ送られます。詳しいJSON形式は [`command_list.md`](command_list.md) を参照してください。同じ `event_id` は重複イベントとして無視されます。
 
 ## LLM出力プロトコル
 

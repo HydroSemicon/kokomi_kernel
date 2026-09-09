@@ -204,8 +204,8 @@ When sending person event:
 {
   "event": {
     "source": "deepsort",
-    "type": "person_appeared",
-    "message": "A person has appeared."
+    "type": "person_recognized",
+    "message": "The visible registered person is KOT."
   }
 }
 
@@ -281,12 +281,14 @@ Speech:
 
 YOLO event:
 - Current /yolo_event must stop sending plain Japanese text.
+- A person detection alone does not produce an event. Only resolved identity,
+  enrollment completion, and subsequent disappearance events are sent.
 - It must send this JSON to ChatGPT:
 {
   "event": {
     "source": "deepsort",
-    "type": "person_appeared",
-    "message": "A person has appeared."
+    "type": "person_recognized",
+    "message": "The visible registered person is KOT."
   }
 }
 

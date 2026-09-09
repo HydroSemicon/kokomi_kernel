@@ -143,6 +143,26 @@ ChatGPT input detected
 ChatGPT output monitor started after turn: ...
 ```
 
+## 運用WebUI
+
+Kernelの起動後、ブラウザで次を開きます。
+
+```text
+http://localhost:3000/dashboard/
+```
+
+運用WebUIでは以下を一元的に確認・操作できます。
+
+- Kernel、ChatGPTブラウザ連携、各センサー、ビジョン、顔記憶、TTSの接続状態
+- 気温、湿度、気圧、明るさの最新値
+- 受信APIの呼び出し回数、エラー数、直近のHTTPステータスとレイテンシ
+- ChatGPTとの送受信、監査結果、デバイス操作を含むリアルタイムイベントログ
+- ChatGPTへのユーザー入力、LEDカラー、涙機構の手動操作
+
+ログは通常、人が読みやすい要約で表示されます。完全なJSONは各ログ行の「JSONペイロードを表示」、または画面右上の「JSONを表示」から必要なときだけ展開できます。状態更新にはServer-Sent Eventsを使用し、接続が一時的に切れた場合も定期取得で補完します。
+
+> WebUIとAPIには認証がありません。既存APIと同様、信頼できるLAN内だけで公開してください。LEDと涙機構の操作は即時に実機へ送信されます。
+
 ## 使い方
 
 ユーザー入力をHTTP APIから送る例です。
@@ -216,6 +236,18 @@ DeepSORTの人物追跡・顔認識イベントを受け取ります。
 ```
 
 人物を検出しただけではイベントは送られません。受理するイベントは`person_recognized`、`person_unknown`、`person_enrolled`、`person_disappeared`です。`person_disappeared`は認識結果または登録完了を通知済みの人物についてのみ送られます。詳しいJSON形式は [`command_list.md`](command_list.md) を参照してください。同じ `event_id` は重複イベントとして無視されます。
+
+### `GET /api/dashboard/status`
+
+運用WebUI向けに、Kernel稼働時間、サービス状態、センサー値、API統計、直近のイベントを返します。秘密情報や環境変数は含みません。
+
+### `GET /api/dashboard/events`
+
+サービス状態と通信イベントをServer-Sent Eventsで配信します。
+
+### `POST /api/dashboard/actions`
+
+運用WebUIから`led_change`または`tear`だけを実行します。既存のLLM出力監査と同じパラメーター検証を通過した操作だけが実機へ送信されます。
 
 ## LLM出力プロトコル
 

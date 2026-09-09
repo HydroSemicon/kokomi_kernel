@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="ja">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#16211d">
+    <title>Kokomi Kernel — Operations Console</title>
+    <link rel="stylesheet" href="/dashboard/styles.css">
+</head>
+<body>
+    <div class="app-shell">
+        <aside class="sidebar" aria-label="メインナビゲーション">
+            <a class="brand" href="#overview" aria-label="Kokomi Kernel トップ">
+                <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+                <span><strong>Kokomi</strong><small>KERNEL CONSOLE</small></span>
+            </a>
+
+            <nav class="nav-list">
+                <a class="nav-link active" href="#overview"><span aria-hidden="true">⌂</span>概要</a>
+                <a class="nav-link" href="#communications"><span aria-hidden="true">⇄</span>通信</a>
+                <a class="nav-link" href="#endpoints"><span aria-hidden="true">⌁</span>APIエンドポイント</a>
+                <a class="nav-link" href="#controls"><span aria-hidden="true">◫</span>デバイス操作</a>
+            </nav>
+
+            <div class="sidebar-foot">
+                <div class="side-status"><span class="live-dot"></span><span>監視ストリーム</span><strong id="stream-status">接続中</strong></div>
+                <div class="side-meta"><span>LOCAL NODE</span><span id="sidebar-port">:3000</span></div>
+            </div>
+        </aside>
+
+        <main class="main-content">
+            <header class="topbar">
+                <div>
+                    <p class="eyebrow">OPERATIONS / REALTIME</p>
+                    <h1>カーネル運用コンソール</h1>
+                </div>
+                <div class="topbar-actions">
+                    <label class="json-switch" title="通信ログのJSONをまとめて開閉します">
+                        <input id="json-toggle" type="checkbox">
+                        <span>JSONを表示</span>
+                    </label>
+                    <button class="icon-button" id="refresh-button" type="button" aria-label="最新情報に更新" title="最新情報に更新">↻</button>
+                    <div class="clock"><strong id="clock-time">--:--:--</strong><span id="clock-date">----/--/--</span></div>
+                </div>
+            </header>
+
+            <div class="content-wrap">
+                <section id="overview" class="page-section">
+                    <div id="alert-banner" class="alert-banner" hidden></div>
+
+                    <article class="system-hero">
+                        <div class="hero-primary">
+                            <div class="hero-orbit" aria-hidden="true"><span></span></div>
+                            <div>
+                                <div class="hero-label"><span id="kernel-dot" class="status-dot checking"></span><span id="kernel-label">状態を確認中</span></div>
+                                <h2>Kokomi Kernel</h2>
+                                <p id="kernel-description">各サービスの状態を収集しています</p>
+                            </div>
+                        </div>
+                        <div class="hero-metrics">
+                            <div><span>稼働時間</span><strong id="uptime">--</strong></div>
+                            <div><span>ChatGPT</span><strong id="chatgpt-summary">確認中</strong></div>
+                            <div><span>API 成功率</span><strong id="api-success">--%</strong></div>
+                            <div><span>最終更新</span><strong id="last-update">--:--:--</strong></div>
+                        </div>
+                    </article>
+
+                    <div class="section-heading">
+                        <div><p class="eyebrow">ENVIRONMENT</p><h2>現在の環境</h2></div>
+                        <p id="sensor-updated" class="section-note">サンプルを待っています</p>
+                    </div>
+                    <div id="sensor-grid" class="sensor-grid" aria-live="polite"></div>
+
+                    <div class="overview-grid">
+                        <article class="panel services-panel">
+                            <div class="panel-head"><div><p class="eyebrow">CONNECTIONS</p><h2>接続サービス</h2></div><span id="service-count" class="counter">--</span></div>
+                            <div id="service-list" class="service-list"></div>
+                        </article>
+
+                        <article class="panel activity-panel">
+                            <div class="panel-head"><div><p class="eyebrow">LIVE ACTIVITY</p><h2>直近の動き</h2></div><a href="#communications">すべて見る →</a></div>
+                            <div id="activity-preview" class="activity-list compact"></div>
+                        </article>
+                    </div>
+                </section>
+
+                <section id="communications" class="page-section">
+                    <div class="section-heading split-heading">
+                        <div><p class="eyebrow">COMMUNICATIONS</p><h2>通信センター</h2><p>人が読みやすい要約を優先し、完全なペイロードは必要なときだけ展開できます。</p></div>
+                        <div class="filter-group" role="group" aria-label="通信ログフィルター">
+                            <button class="filter active" data-filter="all" type="button">すべて</button>
+                            <button class="filter" data-filter="inbound" type="button">受信</button>
+                            <button class="filter" data-filter="outbound" type="button">送信</button>
+                            <button class="filter" data-filter="error" type="button">エラー</button>
+                        </div>
+                    </div>
+
+                    <div class="communications-grid">
+                        <article class="panel composer-panel">
+                            <div class="panel-head"><div><p class="eyebrow">USER INPUT</p><h2>ChatGPTへ指示</h2></div><span class="route-label">POST /user_input</span></div>
+                            <form id="message-form">
+                                <label for="message-input">メッセージ</label>
+                                <textarea id="message-input" rows="5" maxlength="2000" placeholder="例：現在の部屋の様子を教えて"></textarea>
+                                <div class="form-foot"><span><kbd>Ctrl</kbd> + <kbd>Enter</kbd> で送信</span><button class="button primary" type="submit">ChatGPTへ送信 <span>→</span></button></div>
+                            </form>
+                        </article>
+
+                        <article class="panel stats-panel">
+                            <div class="panel-head"><div><p class="eyebrow">SESSION</p><h2>通信サマリー</h2></div></div>
+                            <div class="mini-stats">
+                                <div><span>受信</span><strong id="inbound-count">0</strong><small>requests</small></div>
+                                <div><span>送信</span><strong id="outbound-count">0</strong><small>messages</small></div>
+                                <div><span>エラー</span><strong id="error-count">0</strong><small>events</small></div>
+                            </div>
+                            <div class="bridge-path"><span>Devices</span><i></i><span>Kernel</span><i></i><span>ChatGPT</span></div>
+                        </article>
+                    </div>
+
+                    <article class="panel log-panel">
+                        <div class="panel-head"><div><p class="eyebrow">EVENT LOG</p><h2>通信・イベント履歴</h2></div><span id="log-count" class="counter">0件</span></div>
+                        <div id="activity-log" class="activity-list full"></div>
+                    </article>
+                </section>
+
+                <section id="endpoints" class="page-section">
+                    <div class="section-heading split-heading">
+                        <div><p class="eyebrow">API SURFACE</p><h2>APIエンドポイント</h2><p>呼び出し回数、直近の応答、レイテンシを一元表示します。</p></div>
+                        <div class="legend"><span><i class="status-dot online"></i>正常</span><span><i class="status-dot degraded"></i>要確認</span></div>
+                    </div>
+                    <article class="panel table-panel">
+                        <div class="table-wrap">
+                            <table>
+                                <thead><tr><th>状態</th><th>メソッド / パス</th><th>用途</th><th>呼出</th><th>エラー</th><th>直近の応答</th></tr></thead>
+                                <tbody id="endpoint-table"></tbody>
+                            </table>
+                        </div>
+                    </article>
+                </section>
+
+                <section id="controls" class="page-section">
+                    <div class="section-heading split-heading">
+                        <div><p class="eyebrow">DEVICE CONTROL</p><h2>デバイス操作</h2><p>実行結果は通信ログと接続サービスに自動反映されます。</p></div>
+                        <span class="safety-note">操作は即時実行されます</span>
+                    </div>
+
+                    <div class="control-grid">
+                        <article class="panel control-card led-card">
+                            <div class="control-icon led-icon" aria-hidden="true">✦</div>
+                            <div class="control-copy"><p class="eyebrow">LIGHTING</p><h2>LEDカラー</h2><p>本体LEDの発光色を設定します。</p></div>
+                            <form id="led-form">
+                                <div class="color-control">
+                                    <input id="led-color" type="color" value="#7ED9C4" aria-label="LEDカラー">
+                                    <label for="led-hex">カラーコード<input id="led-hex" type="text" value="#7ED9C4" pattern="#[0-9A-Fa-f]{6}" maxlength="7"></label>
+                                </div>
+                                <div class="color-presets" aria-label="プリセットカラー">
+                                    <button type="button" data-color="#7ED9C4" style="--swatch:#7ED9C4" aria-label="ミント"></button>
+                                    <button type="button" data-color="#78A9FF" style="--swatch:#78A9FF" aria-label="ブルー"></button>
+                                    <button type="button" data-color="#FFCC70" style="--swatch:#FFCC70" aria-label="アンバー"></button>
+                                    <button type="button" data-color="#FF8FA3" style="--swatch:#FF8FA3" aria-label="ピンク"></button>
+                                    <button type="button" data-color="#FFFFFF" style="--swatch:#FFFFFF" aria-label="ホワイト"></button>
+                                </div>
+                                <button class="button primary full-button" type="submit">LEDへ反映</button>
+                            </form>
+                        </article>
+
+                        <article class="panel control-card">
+                            <div class="control-icon tear-icon" aria-hidden="true">◒</div>
+                            <div class="control-copy"><p class="eyebrow">TEAR MECHANISM</p><h2>涙機構</h2><p>速度と駆動時間を指定してテストします。</p></div>
+                            <form id="tear-form">
+                                <label class="range-row" for="tear-speed"><span>速度<strong id="speed-value">120</strong></span><input id="tear-speed" type="range" min="0" max="255" value="120"></label>
+                                <label class="range-row" for="tear-duration"><span>駆動時間<strong id="duration-value">80</strong></span><input id="tear-duration" type="range" min="0" max="255" value="80"></label>
+                                <button class="button secondary full-button" type="submit">テスト実行</button>
+                            </form>
+                        </article>
+                    </div>
+                </section>
+
+                <footer><span>Kokomi Kernel Operations Console</span><span id="footer-version">v1.0.0 · localhost</span></footer>
+            </div>
+        </main>
+    </div>
+
+    <div id="toast-region" class="toast-region" aria-live="polite" aria-atomic="true"></div>
+    <script type="module" src="/dashboard/app.js"></script>
+</body>
+</html>

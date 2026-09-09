@@ -7,6 +7,7 @@ import { spawn } from "child_process";
 import fs from "fs";
 import os from "os";
 import path from "path";
+import { fileURLToPath } from "url";
 import "dotenv/config";
 
 const config = JSON.parse(fs.readFileSync(new URL("./config.json", import.meta.url), "utf8"));
@@ -33,7 +34,7 @@ const ELEVENLABS_OUTPUT_FORMAT = process.env.ELEVENLABS_OUTPUT_FORMAT || config.
 const BSKY_IDENTIFIER = process.env.BSKY_IDENTIFIER;
 const BSKY_PASSWORD = process.env.BSKY_PASSWORD;
 
-if (!ELEVENLABS_API_KEY) {
+if (TTS_ENABLED && !ELEVENLABS_API_KEY) {
     throw new Error("ELEVENLABS_API_KEY is required. Set it in .env.");
 }
 
@@ -44,6 +45,154 @@ let chatOperationQueue = Promise.resolve();
 let blueskyAgent = null;
 let blueskyLoginPromise = null;
 const processedVisionEventIds = new Set();
+
+/* ---------------------------
+   Operations dashboard state
+--------------------------- */
+const kernelStartedAt = Date.now();
+const dashboardDirectory = fileURLToPath(new URL("./dashboard", import.meta.url));
+const dashboardClients = new Set();
+const recentActivity = [];
+let activitySequence = 0;
+
+const serviceState = {
+    kernel: { status: "online", label: "Kernel API", detail: `Port ${config.server.port}` },
+    chatgpt: { status: "checking", label: "ChatGPT bridge", detail: "Connecting to browser" },
+    bme280: { status: "checking", label: "Environment sensor", detail: "Waiting for first sample" },
+    brightness: { status: "checking", label: "Brightness sensor", detail: "Waiting for first sample" },
+    actuators: { status: "idle", label: "Actuators", detail: "No command sent yet" },
+    vision: { status: "idle", label: "Vision snapshot", detail: "No request sent yet" },
+    faceMemory: { status: "idle", label: "Face memory", detail: "No request sent yet" },
+    tts: {
+        status: TTS_ENABLED ? "idle" : "disabled",
+        label: "Voice output",
+        detail: TTS_ENABLED ? "Ready" : "Disabled in config",
+    },
+};
+
+const endpointState = new Map([
+    [config.routes.userInput, { method: "POST", label: "ユーザー入力", calls: 0, errors: 0 }],
+    [config.routes.touchSensorInput, { method: "POST", label: "タッチセンサー", calls: 0, errors: 0 }],
+    [config.routes.yoloEvent, { method: "POST", label: "人物認識イベント", calls: 0, errors: 0 }],
+    ["/api/dashboard/status", { method: "GET", label: "監視スナップショット", calls: 0, errors: 0, trackActivity: false }],
+    ["/api/dashboard/events", { method: "GET", label: "リアルタイム監視", calls: 0, errors: 0, trackActivity: false }],
+    ["/api/dashboard/actions", { method: "POST", label: "デバイス手動操作", calls: 0, errors: 0 }],
+]);
+
+function nowIso() {
+    return new Date().toISOString();
+}
+
+function broadcastDashboard(event, payload) {
+    const message = `event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`;
+    for (const client of dashboardClients) {
+        client.write(message);
+    }
+}
+
+function updateService(id, patch) {
+    const current = serviceState[id];
+    if (!current) return;
+
+    const previousStatus = current.status;
+    Object.assign(current, patch, { updatedAt: nowIso() });
+    if (patch.status === "online") current.lastSuccessAt = current.updatedAt;
+    if (patch.status === "offline" || patch.status === "degraded") current.lastErrorAt = current.updatedAt;
+
+    broadcastDashboard("service", { id, ...current });
+    if (previousStatus !== current.status && current.status !== "checking") {
+        recordActivity({
+            category: "system",
+            status: current.status === "online" ? "success" : current.status,
+            title: `${current.label}: ${current.status}`,
+            summary: current.detail,
+            service: id,
+        });
+    }
+}
+
+function recordActivity({ category, status = "success", title, summary = "", direction = null, endpoint = null, service = null, payload = null, durationMs = null }) {
+    const item = {
+        id: ++activitySequence,
+        timestamp: nowIso(),
+        category,
+        status,
+        title,
+        summary,
+        direction,
+        endpoint,
+        service,
+        durationMs,
+        payload,
+    };
+    recentActivity.unshift(item);
+    if (recentActivity.length > 100) recentActivity.length = 100;
+    broadcastDashboard("activity", item);
+    return item;
+}
+
+function markEndpointRequest(route, statusCode, durationMs, payload) {
+    const endpoint = endpointState.get(route);
+    if (!endpoint) return;
+
+    endpoint.calls += 1;
+    endpoint.lastStatusCode = statusCode;
+    endpoint.lastCalledAt = nowIso();
+    endpoint.lastDurationMs = durationMs;
+    if (statusCode >= 400) endpoint.errors += 1;
+    if (endpoint.trackActivity === false) return;
+
+    recordActivity({
+        category: "api",
+        status: statusCode < 400 ? "success" : "error",
+        title: `${endpoint.method} ${route}`,
+        summary: `${endpoint.label} · HTTP ${statusCode}`,
+        direction: "inbound",
+        endpoint: route,
+        payload,
+        durationMs,
+    });
+}
+
+function publicSensorState() {
+    return {
+        temperature: readSensorField("temperature") ?? null,
+        humidity: readSensorField("humidity") ?? null,
+        pressure: readSensorField("pressure") ?? null,
+        brightness: readSensorField("brightness") ?? null,
+        units: SENSOR_UNITS,
+        updatedAt: serviceState.bme280.lastSuccessAt || serviceState.brightness.lastSuccessAt || null,
+    };
+}
+
+function publicDashboardState() {
+    const services = Object.entries(serviceState).map(([id, service]) => ({ id, ...service }));
+    const endpoints = [...endpointState.entries()].map(([route, endpoint]) => ({
+        route,
+        ...endpoint,
+        health: endpoint.lastStatusCode >= 500 ? "degraded" : "online",
+    }));
+    const unhealthyCount = services.filter((service) => ["offline", "degraded"].includes(service.status)).length;
+
+    return {
+        generatedAt: nowIso(),
+        kernel: {
+            status: unhealthyCount === 0 ? "online" : "degraded",
+            startedAt: new Date(kernelStartedAt).toISOString(),
+            uptimeSeconds: Math.floor((Date.now() - kernelStartedAt) / 1000),
+            port: config.server.port,
+            version: "1.0.0",
+        },
+        services,
+        endpoints,
+        sensors: publicSensorState(),
+        activity: recentActivity.slice(0, 60),
+        capabilities: {
+            ttsEnabled: TTS_ENABLED,
+            actions: ["led_change", "tear"],
+        },
+    };
+}
 
 /* ---------------------------
    ElevenLabs TTS
@@ -118,11 +267,19 @@ function speakTTS(text) {
         return Promise.resolve();
     }
 
+    updateService("tts", { status: "busy", detail: "Generating speech" });
     ttsQueue = ttsQueue
         .catch((err) => {
             console.error("previous TTS failed:", err.message);
         })
-        .then(() => speakTextNow(text));
+        .then(() => speakTextNow(text))
+        .then(() => {
+            updateService("tts", { status: "online", detail: "Last speech completed" });
+        })
+        .catch((err) => {
+            updateService("tts", { status: "degraded", detail: err.message });
+            throw err;
+        });
 
     return ttsQueue;
 }
@@ -131,18 +288,35 @@ function speakTTS(text) {
    BME280 polling
 --------------------------- */
 async function pollSensor() {
+    const startedAt = Date.now();
     try {
         const res = await fetch(config.sensors.bme280Url);
         if (!res.ok) {
             console.log("sensor fetch error:", res.status);
+            updateService("bme280", {
+                status: "degraded",
+                detail: `HTTP ${res.status}`,
+                latencyMs: Date.now() - startedAt,
+            });
             return;
         }
         latestSensor = {
             ...latestSensor,
             ...(await res.json()),
         };
+        updateService("bme280", {
+            status: "online",
+            detail: "Receiving environment data",
+            latencyMs: Date.now() - startedAt,
+        });
+        broadcastDashboard("sensors", publicSensorState());
     } catch (err) {
         console.log("sensor fetch failed:", err.message);
+        updateService("bme280", {
+            status: "offline",
+            detail: err.message,
+            latencyMs: Date.now() - startedAt,
+        });
     }
 }
 setInterval(pollSensor, config.sensors.bme280PollIntervalMs);
@@ -152,24 +326,46 @@ pollSensor();
    CdS polling
 --------------------------- */
 async function pollBrightnessSensor() {
+    const startedAt = Date.now();
     try {
         const res = await fetch(config.sensors.brightnessUrl);
         if (!res.ok) {
             console.log("brightness sensor fetch error:", res.status);
+            updateService("brightness", {
+                status: "degraded",
+                detail: `HTTP ${res.status}`,
+                latencyMs: Date.now() - startedAt,
+            });
             return;
         }
         const data = await res.json();
         const brightness = data[config.sensors.brightnessResponseFields[0]] ?? data[config.sensors.brightnessResponseFields[1]];
         if (typeof brightness !== "number" || !Number.isFinite(brightness)) {
             console.log("brightness sensor response missing brightness:", data);
+            updateService("brightness", {
+                status: "degraded",
+                detail: "Response did not contain brightness",
+                latencyMs: Date.now() - startedAt,
+            });
             return;
         }
         latestSensor = {
             ...latestSensor,
             brightness,
         };
+        updateService("brightness", {
+            status: "online",
+            detail: "Receiving brightness data",
+            latencyMs: Date.now() - startedAt,
+        });
+        broadcastDashboard("sensors", publicSensorState());
     } catch (err) {
         console.log("brightness sensor fetch failed:", err.message);
+        updateService("brightness", {
+            status: "offline",
+            detail: err.message,
+            latencyMs: Date.now() - startedAt,
+        });
     }
 }
 setInterval(pollBrightnessSensor, config.sensors.brightnessPollIntervalMs);
@@ -456,7 +652,36 @@ async function sendJsonToChatGPTNow(obj) {
 }
 
 function sendJsonToChatGPT(obj) {
-    return enqueueChatOperation(() => sendJsonToChatGPTNow(obj));
+    const startedAt = Date.now();
+    return enqueueChatOperation(() => sendJsonToChatGPTNow(obj))
+        .then((result) => {
+            updateService("chatgpt", { status: "online", detail: "Browser bridge connected" });
+            recordActivity({
+                category: "communication",
+                status: "success",
+                title: "Sent to ChatGPT",
+                summary: "Kernel message delivered through the browser bridge",
+                direction: "outbound",
+                service: "chatgpt",
+                payload: obj,
+                durationMs: Date.now() - startedAt,
+            });
+            return result;
+        })
+        .catch((err) => {
+            updateService("chatgpt", { status: "degraded", detail: err.message });
+            recordActivity({
+                category: "communication",
+                status: "error",
+                title: "ChatGPT delivery failed",
+                summary: err.message,
+                direction: "outbound",
+                service: "chatgpt",
+                payload: obj,
+                durationMs: Date.now() - startedAt,
+            });
+            throw err;
+        });
 }
 
 function getVisionMimeType(contentType, buffer) {
@@ -479,6 +704,7 @@ function getVisionMimeType(contentType, buffer) {
 }
 
 async function fetchVisionSnapshot() {
+    const startedAt = Date.now();
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), config.vision.snapshotTimeoutMs);
 
@@ -500,7 +726,19 @@ async function fetchVisionSnapshot() {
         }
         const mimeType = getVisionMimeType(response.headers.get("content-type"), buffer);
 
+        updateService("vision", {
+            status: "online",
+            detail: "Snapshot available",
+            latencyMs: Date.now() - startedAt,
+        });
         return { buffer, mimeType };
+    } catch (err) {
+        updateService("vision", {
+            status: "offline",
+            detail: err.message,
+            latencyMs: Date.now() - startedAt,
+        });
+        throw err;
     } finally {
         clearTimeout(timeout);
     }
@@ -622,13 +860,49 @@ async function sendActionToPi(action) {
             ? config.actions.tear.endpointUrl
             : config.actions.ledChange.endpointUrl;
 
-    const res = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(action),
-    });
+    const startedAt = Date.now();
+    try {
+        const res = await fetch(url, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(action),
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
 
-    console.log("executed action:", action, "status:", res.status);
+        updateService("actuators", {
+            status: "online",
+            detail: `${action.type} command accepted`,
+            latencyMs: Date.now() - startedAt,
+        });
+        recordActivity({
+            category: "control",
+            status: "success",
+            title: action.type === "tear" ? "Tear mechanism command" : "LED color changed",
+            summary: action.type === "tear" ? `Speed ${action.params.speed} · Duration ${action.params.duration}` : action.params.color,
+            direction: "outbound",
+            service: "actuators",
+            payload: action,
+            durationMs: Date.now() - startedAt,
+        });
+        console.log("executed action:", action, "status:", res.status);
+    } catch (err) {
+        updateService("actuators", {
+            status: "offline",
+            detail: err.message,
+            latencyMs: Date.now() - startedAt,
+        });
+        recordActivity({
+            category: "control",
+            status: "error",
+            title: "Actuator command failed",
+            summary: err.message,
+            direction: "outbound",
+            service: "actuators",
+            payload: action,
+            durationMs: Date.now() - startedAt,
+        });
+        throw err;
+    }
 }
 
 async function getBlueskyAgent() {
@@ -668,6 +942,7 @@ async function sendBlueskyPost(action) {
 }
 
 async function rememberPerson(action) {
+    const startedAt = Date.now();
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), config.faceMemory.requestTimeoutMs);
 
@@ -688,7 +963,19 @@ async function rememberPerson(action) {
         if (body.status !== "collecting" || !isPlainObject(body.person) || body.person.status !== "collecting") {
             throw new Error("face enrollment returned an unexpected response");
         }
+        updateService("faceMemory", {
+            status: "online",
+            detail: "Enrollment request accepted",
+            latencyMs: Date.now() - startedAt,
+        });
         console.log("face enrollment started:", body.person);
+    } catch (err) {
+        updateService("faceMemory", {
+            status: "offline",
+            detail: err.message,
+            latencyMs: Date.now() - startedAt,
+        });
+        throw err;
     } finally {
         clearTimeout(timeout);
     }
@@ -878,6 +1165,69 @@ async function executeAuditedPayload(payload) {
 const app = express();
 app.use(express.json());
 
+app.use((req, res, next) => {
+    if (!endpointState.has(req.path)) return next();
+
+    const startedAt = Date.now();
+    res.on("finish", () => {
+        markEndpointRequest(req.path, res.statusCode, Date.now() - startedAt, req.body);
+    });
+    return next();
+});
+
+app.use("/dashboard", express.static(dashboardDirectory, {
+    extensions: ["html"],
+    etag: true,
+    maxAge: "5m",
+}));
+
+app.get("/", (req, res) => {
+    res.redirect("/dashboard/");
+});
+
+app.get("/api/dashboard/status", (req, res) => {
+    res.set("Cache-Control", "no-store");
+    res.json(publicDashboardState());
+});
+
+app.get("/api/dashboard/events", (req, res) => {
+    res.set({
+        "Cache-Control": "no-cache",
+        "Content-Type": "text/event-stream",
+        Connection: "keep-alive",
+    });
+    res.flushHeaders();
+    dashboardClients.add(res);
+    res.write(`event: snapshot\ndata: ${JSON.stringify(publicDashboardState())}\n\n`);
+
+    const heartbeat = setInterval(() => {
+        res.write(`event: heartbeat\ndata: ${JSON.stringify({ timestamp: nowIso() })}\n\n`);
+    }, 15000);
+    heartbeat.unref();
+
+    req.on("close", () => {
+        clearInterval(heartbeat);
+        dashboardClients.delete(res);
+    });
+});
+
+app.post("/api/dashboard/actions", async (req, res) => {
+    const action = req.body;
+    if (!isPlainObject(action) || !["led_change", "tear"].includes(action.type)) {
+        return res.status(400).json({ error: "Dashboard supports only led_change and tear actions" });
+    }
+
+    const validationError = validateActions([action]);
+    if (validationError) return res.status(400).json({ error: validationError });
+
+    try {
+        await executeAction(action);
+        return res.json({ status: "OK" });
+    } catch (err) {
+        return res.status(502).json({ error: err.message });
+    }
+});
+
 app.post(config.routes.yoloEvent, async (req, res) => {
     console.log("YOLO event:", req.body);
     if (!page) {
@@ -950,6 +1300,13 @@ app.post(config.routes.touchSensorInput, async (req, res) => {
 
 app.listen(config.server.port, () => {
     console.log(`YOLO event server listening on :${config.server.port}`);
+    recordActivity({
+        category: "system",
+        status: "success",
+        title: "Kernel API started",
+        summary: `Dashboard and API listening on port ${config.server.port}`,
+        service: "kernel",
+    });
 });
 
 /* ---------------------------
@@ -1011,8 +1368,10 @@ async function runLLaVA(prompt) {
 (async () => {
     let browser;
     try {
+        updateService("chatgpt", { status: "checking", detail: "Connecting to Chrome" });
         browser = await puppeteer.connect({ browserURL: REMOTE_DEBUGGING_URL });
     } catch (err) {
+        updateService("chatgpt", { status: "offline", detail: err.message });
         console.error(config.browser.chromeConnectErrorMessage);
         throw err;
     }
@@ -1030,6 +1389,7 @@ async function runLLaVA(prompt) {
 
     await page.bringToFront();
     await page.waitForSelector(CHAT_INPUT_SELECTOR, { timeout: config.browser.inputTimeoutMs });
+    updateService("chatgpt", { status: "online", detail: "Browser bridge connected" });
     console.log("ChatGPT input detected");
 
     let streamBuffer = "";
@@ -1058,16 +1418,43 @@ async function runLLaVA(prompt) {
                 console.log("parsed JSON:", payload);
             } catch (err) {
                 console.log("rejected JSON: invalid JSON", err.message, jsonText);
+                recordActivity({
+                    category: "audit",
+                    status: "error",
+                    title: "Invalid ChatGPT response",
+                    summary: "Response was not valid JSON",
+                    direction: "inbound",
+                    service: "chatgpt",
+                    payload: { raw: jsonText },
+                });
                 continue;
             }
 
             const audit = auditLLMJson(payload);
             if (!audit.ok) {
                 console.log("rejected JSON:", audit.reason, payload);
+                recordActivity({
+                    category: "audit",
+                    status: "error",
+                    title: "ChatGPT response rejected",
+                    summary: audit.reason,
+                    direction: "inbound",
+                    service: "chatgpt",
+                    payload,
+                });
                 continue;
             }
 
             console.log("accepted JSON:", audit.payload);
+            recordActivity({
+                category: "communication",
+                status: "success",
+                title: "ChatGPT response accepted",
+                summary: audit.payload.speech || `${(audit.payload.actions || []).length} actions · ${(audit.payload.requests || []).length} requests`,
+                direction: "inbound",
+                service: "chatgpt",
+                payload: audit.payload,
+            });
             await executeAuditedPayload(audit.payload);
         }
     });
@@ -1131,4 +1518,8 @@ async function runLLaVA(prompt) {
         outputPollIntervalMs: config.browser.outputPollIntervalMs,
     });
     console.log("ChatGPT output monitor started after turn:", startupAssistantTurnBoundary);
-})();
+})().catch((err) => {
+    updateService("chatgpt", { status: "offline", detail: err.message });
+    console.error("ChatGPT bridge initialization failed:", err.message);
+    console.error("Kernel API and dashboard remain available for diagnostics.");
+});

@@ -9,7 +9,7 @@
         "chatgptUrl": "https://chatgpt.com/",
         "existingPageUrlIncludes": ["chatgpt.com", "chat.openai.com"],
         "inputTimeoutMs": 60000,
-        "typeDelayMs": 5,
+        "typeDelayMs": 0,
         "outputPollIntervalMs": 300,
         "chromeConnectErrorMessage": "Failed to connect to Chrome. Start Chrome with: chrome.exe --remote-debugging-port=9222 --user-data-dir=\"C:\\chrome-debug-profile\""
     },

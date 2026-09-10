@@ -1,0 +1,171 @@
+export class ContextComposer {
+    constructor({ persona = {}, protocolVersion = "1.2" } = {}) {
+        this.persona = persona;
+        this.protocolVersion = protocolVersion;
+    }
+
+    compose({ trigger, state, world, behaviorProposals = [], memories = [], social = {}, drives = {}, actionGate = {} }) {
+        const context = {
+            type: "cognitive_context",
+            protocol_version: this.protocolVersion,
+            turn_id: trigger.id,
+            trigger: compactTrigger(trigger),
+            persona: {
+                id: this.persona.id ?? "kokomi-origin",
+                version: compactVersion(this.persona.version ?? "unspecified"),
+            },
+            state: projectState(state),
+            world: projectWorld(world),
+        };
+
+        if (memories.length > 0) context.memory = memories.map(compactMemory);
+        const compactSocialState = compactSocial(social);
+        if (Object.keys(compactSocialState).length > 0) context.social = compactSocialState;
+        const compactDriveState = compactDrives(drives);
+        if (Object.keys(compactDriveState).length > 0) context.drives = compactDriveState;
+        if (trigger.type !== "action.outcome" && actionGate?.recent_outcomes?.length > 0) {
+            context.last_action_outcome = compactOutcome(actionGate.recent_outcomes[0]);
+        }
+        if (behaviorProposals.length > 0) {
+            context.behavior_proposals = behaviorProposals.map(compactProposal);
+        }
+        return context;
+    }
+}
+
+function compactSocial(social) {
+    const result = {};
+    if (social.visible_people?.length > 0) result.visible_people = social.visible_people;
+    if (social.relationships?.length > 0) result.relationships = social.relationships;
+    if (social.boundaries?.length > 0) result.boundaries = social.boundaries;
+    if (social.open_commitments?.length > 0) result.open_commitments = social.open_commitments;
+    return result;
+}
+
+function compactDrives(drives) {
+    if (!drives?.needs) return {};
+    const result = { needs: drives.needs };
+    if (Object.keys(drives.external ?? {}).length > 0) result.body_signals = drives.external;
+    if (drives.dominant?.length > 0) result.dominant = drives.dominant;
+    return result;
+}
+
+function compactOutcome(outcome) {
+    return {
+        intention_id: outcome.intention_id,
+        action_type: outcome.action_type,
+        expected_effect: outcome.expected_effect,
+        status: outcome.status,
+        prediction_match: outcome.prediction_match,
+        ...(outcome.error ? { error: outcome.error } : {}),
+    };
+}
+
+function round(value, decimals = 1) {
+    if (typeof value !== "number" || !Number.isFinite(value)) return value;
+    const scale = 10 ** decimals;
+    return Math.round(value * scale) / scale;
+}
+
+function compactVersion(version) {
+    return version.length > 12 ? version.slice(0, 12) : version;
+}
+
+function compactPayload(value) {
+    if (typeof value === "number") return round(value, 3);
+    if (Array.isArray(value)) return value.map(compactPayload);
+    if (value !== null && typeof value === "object") {
+        return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, compactPayload(item)]));
+    }
+    return value;
+}
+
+function compactTrigger(trigger) {
+    const compact = {
+        id: trigger.id,
+        type: trigger.type,
+        payload: compactPayload(trigger.payload),
+    };
+    if (trigger.type !== "interaction.user_input") compact.at = trigger.observed_at;
+    return compact;
+}
+
+function projectFact(fact, decimals = 1) {
+    if (fact?.status !== "known") return fact?.status ?? "unknown";
+    return round(fact.value, decimals);
+}
+
+function projectState(state) {
+    const perception = {
+        person_present: projectFact(state.perception.person_present),
+    };
+    if (state.perception.last_sound.status !== "unknown") {
+        perception.last_sound = state.perception.last_sound.status === "known"
+            ? compactPayload(state.perception.last_sound.value)
+            : state.perception.last_sound.status;
+    }
+    if (state.perception.visible_people.length > 0) {
+        perception.visible_people = state.perception.visible_people.map((person) => ({
+            track_id: person.track_id,
+            identity: person.name ?? person.identity_status,
+            ...(person.position ? { position: person.position } : {}),
+        }));
+    }
+
+    const interaction = {
+        being_petted: projectFact(state.interaction.being_petted),
+    };
+    if (state.interaction.being_petted.value === true) {
+        interaction.touched_body_parts = state.interaction.being_petted.body_parts;
+    }
+
+    return {
+        environment: {
+            temperature_c: projectFact(state.environment.temperature),
+            humidity_percent: projectFact(state.environment.humidity),
+            pressure_hpa: projectFact(state.environment.pressure),
+            brightness_raw: projectFact(state.environment.brightness),
+        },
+        perception,
+        interaction,
+    };
+}
+
+function projectWorld(world) {
+    const projected = {
+        room_occupied: projectFact(world.room.is_occupied),
+        thermal_condition: projectFact(world.environment.thermal_condition),
+        lighting_condition: projectFact(world.environment.lighting_condition),
+    };
+    if (world.environment.is_quiet.status === "known") {
+        projected.environment_quiet = world.environment.is_quiet.value;
+    }
+    if (world.activity.someone_is_talking.status === "known") {
+        projected.someone_talking = world.activity.someone_is_talking.value;
+    }
+    return projected;
+}
+
+function compactMemory(memory) {
+    return {
+        id: memory.id,
+        kind: memory.kind,
+        subject: memory.subject,
+        content: memory.content,
+        confidence: round(memory.confidence, 2),
+        relevance: round(memory.relevance, 2),
+        evidence_event_ids: memory.evidence_event_ids,
+        ...(memory.retrieval_method ? { retrieval_method: memory.retrieval_method } : {}),
+    };
+}
+
+function compactProposal(proposal) {
+    return {
+        id: proposal.id,
+        kind: proposal.kind,
+        priority: proposal.priority,
+        reason: proposal.reason,
+        context: compactPayload(proposal.context),
+        expires_at: proposal.expires_at,
+    };
+}

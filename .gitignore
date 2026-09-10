@@ -4,5 +4,6 @@ commands.log
 !.env.example
 /node_modules
 /chrome_profile
+/data/runtime/
 package-lock.json
 package.json

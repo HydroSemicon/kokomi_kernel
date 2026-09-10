@@ -15,7 +15,9 @@
     },
 
     "audit": {
-        "validTopLevelFields": ["speech", "emotion", "intensity", "actions", "requests"],
+        "validTopLevelFields": ["turn_id", "speech", "emotion", "intensity", "actions", "requests", "memory_proposals", "social_proposals"],
+        "maxPendingTurns": 32,
+        "pendingTurnTtlMs": 300000,
         "validEmotions": [
             "neutral",
             "happy",
@@ -61,6 +63,84 @@
             "pressure": "hpa",
             "brightness": "raw"
         }
+    },
+
+    "behavior": {
+        "freshness": {
+            "environment_ms": 15000,
+            "brightness_ms": 15000,
+            "sound_ms": 5000,
+            "person_ms": 300000,
+            "touch_ms": 30000
+        },
+        "thresholds": {
+            "cold_celsius": 18,
+            "warm_celsius": 27,
+            "hot_celsius": 31,
+            "dark_brightness": 40,
+            "bright_brightness": 75
+        },
+        "cooldowns": {
+            "greet_person_ms": 120000,
+            "respond_to_touch_ms": 10000,
+            "mention_temperature_ms": 900000,
+            "mention_darkness_ms": 900000,
+            "homeostasis_ms": 300000
+        },
+        "proposal_ttl_ms": 30000,
+        "spontaneous": {
+            "enabled": false,
+            "armed": false,
+            "interval_ms": 5000,
+            "minimum_priority": 70
+        },
+        "drives": {
+            "social_need_full_after_ms": 14400000,
+            "external_signal_stale_ms": 300000
+        },
+        "persona": {
+            "id": "kokomi-origin",
+            "version": "604b425e381c5a3c6a523c4715078fbb8ba72bec",
+            "delivery": "session_bootstrap"
+        }
+    },
+
+    "memory": {
+        "storagePath": "./data/runtime/memory.json",
+        "retrievalLimit": 5
+    },
+
+    "social": {
+        "storagePath": "./data/runtime/social.json"
+    },
+
+    "persistence": {
+        "eventLogPath": "./data/runtime/observations.jsonl",
+        "maxReplayEvents": 20000,
+        "sensorCheckpointMs": 60000
+    },
+
+    "actionGate": {
+        "enabled": true,
+        "max_actions_per_turn": 1,
+        "duplicate_window_ms": 30000,
+        "allowed_spontaneous_actions": [],
+        "cooldowns": {
+            "tear_ms": 10000,
+            "led_change_ms": 2000,
+            "bluesky_post_ms": 300000,
+            "remember_person_ms": 60000
+        }
+    },
+
+    "outcomes": {
+        "reportToLlm": true
+    },
+
+    "audio": {
+        "source": "yamnet",
+        "forwardToLlm": false,
+        "allowedLevels": ["quiet", "low", "medium", "high", "loud"]
     },
 
     "touch": {
@@ -116,7 +196,13 @@
     "routes": {
         "yoloEvent": "/yolo_event",
         "touchSensorInput": "/touch_sensor_input",
-        "userInput": "/user_input"
+        "userInput": "/user_input",
+        "audioClassification": "/audio_classification",
+        "internalState": "/internal_state",
+        "behaviorState": "/api/behavior/state",
+        "behaviorTick": "/api/behavior/tick",
+        "memoryProposals": "/api/memory/proposals",
+        "socialProposals": "/api/social/proposals"
     },
 
     "server": {

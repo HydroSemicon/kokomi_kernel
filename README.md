@@ -19,26 +19,45 @@
 - タッチセンサー入力を「撫で始め／撫で終わり」の意味イベントへ変換
 - 明示的に許可された文章をBlueskyへ投稿
 - HTTP API経由でユーザー入力を会話へ追加
+- 生の観測を時刻・信頼度・由来付きの共通エンベロープへ正規化
+- 観測から継続状態を保持し、鮮度切れを`stale`、未観測を`unknown`として区別
+- 在室、温熱、照明、発話、接触を決定論的な世界モデルへ変換
+- 優先度・有効期限・クールダウン付きの自発行動候補を生成
+- LLMの記憶候補を承認待ちとして永続化し、承認済みだけを会話へ検索注入
+- 完全な内部状態から会話に必要な値だけを`CognitiveProjection`として圧縮
+- `turn_id`でLLM応答を元の認知状態へ結び付け、古い／無関係な応答を拒否
+- 行動意図、期待結果、成功・失敗・拒否をObservationとして閉ループ化
+- 関係、境界、約束を承認制Social Stateとして保持し、境界を実行時に強制
+- 推論された機能的欲求と外部の身体信号を分離して行動候補へ統合
+- Observationイベントログを再生して再起動後に状態を復元
 
 ## アーキテクチャ
 
 ```text
-センサー / カメラ / DeepSORT / ユーザー入力
-                       |
-                       v
-                alice.js (Kernel)
-                - イベントの正規化
-                - JSONの監査
-                - 実行順序の制御
-                       |
-             +---------+---------+
-             |                   |
-             v                   v
-     ChatGPT（認知・会話）    実行先サービス
-                             - Raspberry Pi
-                             - ElevenLabs
-                             - 顔登録API
-                             - Bluesky
+センサー / カメラ / DeepSORT / タッチ / ユーザー入力
+                         |
+                         v
+                     Observation
+                         |
+                         v
+                 Persistent State
+                         |
+                         v
+       Deterministic World Model
+             |
+             +----> Behavior Proposals
+             |
+             v
+       Cognitive Context JSON ----> ChatGPT（認知・会話）
+                                      |
+                                      v
+                         turn相関 / JSON監査 / Action Gate
+                                      |
+                                      v
+                                 実行先サービス
+                                      |
+                                      v
+                           Outcome Observation（次の認知へ）
 ```
 
 ChatGPTとの通信には公式APIではなく、リモートデバッグを有効にしたChromeへPuppeteerで接続する方式を使用しています。ChatGPTの画面構造が変わった場合は、`config.json` のセレクター調整が必要になることがあります。
@@ -90,8 +109,7 @@ BSKY_PASSWORD=your_app_password
 
 `.env` はGitの追跡対象外です。認証情報をコミットしないでください。
 
-> [!NOTE]
-> 現在の実装では `config.json` の `tts.enabled` が `false` でも、`ELEVENLABS_API_KEY` が未設定だと起動を停止します。
+`ELEVENLABS_API_KEY`は`tts.enabled`を`true`にする場合だけ必須です。
 
 ### 3. 接続先を設定
 
@@ -116,8 +134,16 @@ BSKY_PASSWORD=your_app_password
 
 1. Chromeをリモートデバッグ付きで起動します。
 2. そのChromeでChatGPTへログインし、新しい会話を開きます。
-3. [`control_prompt.md`](control_prompt.md) の内容を最初の指示として送信します。
-4. 会話タブを開いたままにします。
+3. `kokomi-persona`の人格原典を設定します。
+4. [`control_prompt.md`](control_prompt.md) の内容を制御指示として送信します。
+5. 会話タブを開いたままにします。
+
+プロトコル1.2では応答の`turn_id`が必須です。以前の制御プロンプトを設定した
+既存スレッドを使う場合も、更新後の`control_prompt.md`をもう一度送ってください。
+
+人格はセッション開始時に読み込み、Kernelから送る各`cognitive_context`には
+`config.json`で指定したpersona IDとversionを含めます。会話の直近文脈は
+ChatGPTに残し、身体・世界状態と承認済み長期記憶はKernelを正本とします。
 
 Windowsでの起動例:
 
@@ -157,6 +183,7 @@ http://localhost:3000/dashboard/
 - 気温、湿度、気圧、明るさの最新値
 - 受信APIの呼び出し回数、エラー数、直近のHTTPステータスとレイテンシ
 - ChatGPTとの送受信、監査結果、デバイス操作を含むリアルタイムイベントログ
+- 世界モデル、機能的欲求、社会状態、行動結果、復元イベント数を表示する認知状態ビュー
 - ChatGPTへのユーザー入力、LEDカラー、涙機構の手動操作
 
 ログは通常、人が読みやすい要約で表示されます。完全なJSONは各ログ行の「JSONペイロードを表示」、または画面右上の「JSONを表示」から必要なときだけ展開できます。状態更新にはServer-Sent Eventsを使用し、接続が一時的に切れた場合も定期取得で補完します。
@@ -175,10 +202,13 @@ curl -X POST http://localhost:3000/user_input \
 
 Kernelは次の流れで処理します。
 
-1. 入力を `{"user_input":"..."}` としてChatGPTへ送信
-2. ChatGPTの新しい応答を監視
-3. 応答中のJSONを抽出してスキーマを監査
-4. 許可された発話、アクション、情報要求だけを実行
+1. 入力を共通Observationへ変換
+2. 継続状態と世界モデルを更新
+3. 内部メタデータを除いた`CognitiveProjection`へ変換
+4. 関連記憶と行動候補を加えた`cognitive_context`をChatGPTへ送信
+5. ChatGPTの新しい応答を監視
+6. 応答中のJSONを抽出してスキーマを監査
+7. 許可された発話、アクション、情報要求だけを実行
 
 ## HTTP API
 
@@ -249,20 +279,63 @@ DeepSORTの人物追跡・顔認識イベントを受け取ります。
 
 運用WebUIから`led_change`または`tear`だけを実行します。既存のLLM出力監査と同じパラメーター検証を通過した操作だけが実機へ送信されます。
 
+### Behavior / Memory API
+
+- `GET /api/behavior/state`: 現在の状態、世界モデル、自発行動候補を取得
+- `POST /api/behavior/tick`: 優先度を満たす自発行動候補をChatGPTへ送信
+- `POST /audio_classification`: `label`、`level`、`confidence`を持つ音声分類を状態へ追加
+- `POST /internal_state`: 0〜1に正規化した身体信号を`signals`オブジェクトとして追加
+- `GET /api/memory/proposals?status=pending`: LLMが提案した記憶候補を取得
+- `POST /api/memory/proposals/:id/decision`: `accepted`または`rejected`で候補を審査
+- `GET /api/social/proposals?status=pending`: 関係・境界・約束の候補を取得
+- `POST /api/social/proposals/:id/decision`: Social State候補を審査
+
+音声分類の例:
+
+```json
+{
+  "event_id": "yamnet_123",
+  "source": "yamnet",
+  "label": "speech",
+  "level": "medium",
+  "confidence": 0.91,
+  "timestamp": "2026-09-10T12:00:00.000Z"
+}
+```
+
+身体信号の例:
+
+```json
+{
+  "source": "body_controller",
+  "signals": {
+    "energy_deficit": 0.72,
+    "thermal_discomfort": 0.18
+  }
+}
+```
+
+自発行動の自動ティックは既定で無効です。実機なしの検証後、`config.json`の
+`behavior.spontaneous.enabled`と`behavior.spontaneous.armed`を両方`true`にすると有効化できます。詳しい設計は
+[`docs/behavior-architecture.md`](docs/behavior-architecture.md)を参照してください。
+
 ## LLM出力プロトコル
 
-ChatGPTは単一のJSONオブジェクトだけを返します。許可されるトップレベルのフィールドは次の5つです。
+ChatGPTは入力と同じ`turn_id`を含む単一のJSONオブジェクトだけを返します。
 
 - `speech`: 日本語の発話文
 - `emotion`: `neutral`、`happy`、`calm`、`sad`、`angry`、`surprised`、`fear`、`thinking`
 - `intensity`: `0.0` から `1.0`
 - `actions`: 実行するアクションの配列
 - `requests`: 取得したい情報の配列
+- `memory_proposals`: 将来のセッションにも残す価値がある記憶の候補
+- `social_proposals`: 関係、境界、約束の承認待ち候補
 
 例:
 
 ```json
 {
+  "turn_id": "obs_123",
   "speech": "少し暗くなってきたね。明かりをつけるよ。",
   "emotion": "calm",
   "intensity": 0.4,
@@ -289,6 +362,10 @@ ChatGPTは単一のJSONオブジェクトだけを返します。許可される
 | `config.json` | 接続先、制約、センサー、ルートなどの実行時設定 |
 | `control_prompt.md` | ChatGPTへ渡す現在の制御プロンプト |
 | `command_list.md` | 入出力JSONプロトコルの例と仕様 |
+| `src/behavior/` | Observation、状態保持、世界モデル、行動候補、文脈合成 |
+| `src/memory/` | 承認制の長期記憶ストアと検索 |
+| `src/social/` | 承認制の関係、境界、約束の状態ストア |
+| `docs/behavior-architecture.md` | 所有権境界と新しい行動アーキテクチャの仕様 |
 | `# Embodied AI Robot Project Roadmap.md` | 設計思想、レイヤー構成、今後の方向性 |
 | `elevenlabs_tts.js` ほか | TTS／STTの試作・検証用スクリプト |
 | `archives/` | 過去のブラウザ連携方式などの参考実装 |
@@ -305,7 +382,10 @@ ChatGPTは単一のJSONオブジェクトだけを返します。許可される
 
 ## 開発状況
 
-現在は主にリアクティブ層と会話・認知層を接続する段階です。状態管理、イベント優先度、長期記憶、安全制御、より自律的な行動は今後の拡張対象です。背景とロードマップは [`# Embodied AI Robot Project Roadmap.md`](%23%20Embodied%20AI%20Robot%20Project%20Roadmap.md) を参照してください。
+現在はリアクティブ層と会話・認知層の間に、継続状態、決定論的世界モデル、
+行動候補、承認制長期記憶、Social State、機能的欲求、永続イベントログ、
+行動結果の帰還を導入した段階です。自発行動は実機試験まで既定でarmされません。背景とロードマップは
+[`# Embodied AI Robot Project Roadmap.md`](%23%20Embodied%20AI%20Robot%20Project%20Roadmap.md) を参照してください。
 
 ## License
 

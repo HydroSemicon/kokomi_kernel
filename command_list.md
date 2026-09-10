@@ -2,6 +2,41 @@ LLMが出すコマンド
 LLMはJSON構造のみで入出力するものとする．
 全てのコマンドとJSON構造は1対1対応しており，他の構造で代替できるものではない．
 
+## KernelからLLMへの共通入力
+
+Kernelからの入力は，以下の`cognitive_context`に統一する．従来この文書に記載していた
+`sensor`，`vision`，`event`，`user_input`相当の値は`trigger.payload`に入る．
+
+```json
+{
+  "type": "cognitive_context",
+  "protocol_version": "1.0",
+  "generated_at": "2026-09-10T12:00:00.000Z",
+  "trigger": {
+    "observation_id": "obs_123",
+    "type": "interaction.user_input",
+    "source": "user_input_api",
+    "observed_at": "2026-09-10T12:00:00.000Z",
+    "payload": { "text": "気分はどう？" }
+  },
+  "persona": {
+    "id": "kokomi-origin",
+    "version": "604b425e381c5a3c6a523c4715078fbb8ba72bec",
+    "delivery": "session_bootstrap"
+  },
+  "state": {},
+  "world": {},
+  "memory": { "authority": "kernel", "relevant": [] },
+  "behavior": { "proposals": [] }
+}
+```
+
+`state`は継続状態，`world`はKernelが決定論的に導出した世界モデルである．
+`status: unknown`と`status: stale`を現在の事実として扱ってはならない．
+`behavior.proposals`は候補であって命令ではない．
+
+## LLMからKernelへの出力
+
 @MTFF0000;@
 {
   "actions": [
@@ -97,8 +132,9 @@ Taskはとりあえずdescribe_sceneのみ．これ以外の変数が入って�
 emotionはneutral，happy，calm，sad，angry，surprised，fear，thinking．
 intensityは0.0~1.0の実数値．
 これ以外の変数が入っている場合，変数が1つでも足りない場合，定義域外の場合は不正扱い．
-LLMに入れるコマンド
-Sensor | Temp: 24.31 C Hum: 51.22% Press: 1008.14 hPa 
+以下は`trigger.payload`に入る入力ペイロードの例．
+
+センサー取得結果
 {
   "sensor": {
     "temperature": 24.31,
@@ -115,37 +151,29 @@ Sensor | Temp: 24.31 C Hum: 51.22% Press: 1008.14 hPa
 
 Vision input with the camera image attached to the same message:
 {
-  "vision": {
-    "task": "describe_scene",
-    "query": "describe the scene",
-    "input": "attached_image"
-  }
+  "task": "describe_scene",
+  "query": "describe the scene",
+  "input": "attached_image"
 }
 
 
 
 DeepSORT: 人物追跡イベント
 {
-  "event": {
-    "event_id": "84972a7f330844b982d931f06be840ab",
-    "source": "deepsort",
-    "type": "person_recognized",
-    "track_id": "7",
-    "timestamp": "2026-09-05T12:34:56+00:00",
-    "identity": {
-      "status": "recognized",
-      "person_id": "26b7e2c15a1e4449974367f7da686b74",
-      "name": "KOT",
-      "distance": 0.2563,
-      "threshold": 0.3
-    },
-    "message": "The visible registered person is KOT."
-  }
+  "track_id": "7",
+  "identity": {
+    "status": "recognized",
+    "person_id": "26b7e2c15a1e4449974367f7da686b74",
+    "name": "KOT",
+    "distance": 0.2563,
+    "threshold": 0.3
+  },
+  "message": "The visible registered person is KOT."
 }
-typeはperson_recognized，person_unknown，person_enrolled，person_disappearedのいずれか．
+外側の`trigger.type`はvision.person_recognized，vision.person_unknown，vision.person_enrolled，vision.person_disappearedのいずれか．
 人物を検出しただけではイベントは送られない．登録人物を認識した場合はidentity.statusがrecognizedとなり，nameとperson_idが設定される．未登録人物として確定した場合はidentity.statusがunknownとなる．person_disappearedは認識結果を通知済みのトラックに対してのみ送られる．
 
 ユーザー入力
 {
-  "user_input": "気分はどう？"
+  "text": "気分はどう？"
 }

@@ -9,6 +9,9 @@ import os from "os";
 import path from "path";
 import { fileURLToPath } from "url";
 import "dotenv/config";
+import { BehaviorArchitecture } from "./src/behavior/index.js";
+import { observationSearchText } from "./src/behavior/observation.js";
+import { MemoryStore, validateMemoryProposals } from "./src/memory/memory-store.js";
 
 const config = JSON.parse(fs.readFileSync(new URL("./config.json", import.meta.url), "utf8"));
 
@@ -33,6 +36,12 @@ const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY;
 const ELEVENLABS_OUTPUT_FORMAT = process.env.ELEVENLABS_OUTPUT_FORMAT || config.tts.defaultOutputFormat;
 const BSKY_IDENTIFIER = process.env.BSKY_IDENTIFIER;
 const BSKY_PASSWORD = process.env.BSKY_PASSWORD;
+const repositoryDirectory = path.dirname(fileURLToPath(import.meta.url));
+const behaviorArchitecture = new BehaviorArchitecture({ config: config.behavior });
+const memoryStore = new MemoryStore({
+    filePath: path.resolve(repositoryDirectory, config.memory.storagePath),
+});
+const memoryReady = memoryStore.initialize();
 
 if (TTS_ENABLED && !ELEVENLABS_API_KEY) {
     throw new Error("ELEVENLABS_API_KEY is required. Set it in .env.");
@@ -45,6 +54,27 @@ let chatOperationQueue = Promise.resolve();
 let blueskyAgent = null;
 let blueskyLoginPromise = null;
 const processedVisionEventIds = new Set();
+
+function ingestObservation(input) {
+    const result = behaviorArchitecture.observe(input);
+    broadcastDashboard("behavior", behaviorArchitecture.snapshot());
+    return result;
+}
+
+async function buildCognitiveContext(input, { consumeProposals = true } = {}) {
+    await memoryReady;
+    const { observation } = ingestObservation(input);
+    const memories = memoryStore.retrieve(observationSearchText(observation), {
+        limit: config.memory.retrievalLimit,
+    });
+    return behaviorArchitecture.composeContext(observation, { memories, consumeProposals });
+}
+
+async function sendObservationToChatGPT(input, options) {
+    const context = await buildCognitiveContext(input, options);
+    await sendJsonToChatGPT(context);
+    return context;
+}
 
 /* ---------------------------
    Operations dashboard state
@@ -74,6 +104,9 @@ const endpointState = new Map([
     [config.routes.userInput, { method: "POST", label: "ユーザー入力", calls: 0, errors: 0 }],
     [config.routes.touchSensorInput, { method: "POST", label: "タッチセンサー", calls: 0, errors: 0 }],
     [config.routes.yoloEvent, { method: "POST", label: "人物認識イベント", calls: 0, errors: 0 }],
+    [config.routes.behaviorState, { method: "GET", label: "行動状態スナップショット", calls: 0, errors: 0, trackActivity: false }],
+    [config.routes.behaviorTick, { method: "POST", label: "自発行動ティック", calls: 0, errors: 0 }],
+    [config.routes.memoryProposals, { method: "GET", label: "記憶候補一覧", calls: 0, errors: 0, trackActivity: false }],
     ["/api/dashboard/status", { method: "GET", label: "監視スナップショット", calls: 0, errors: 0, trackActivity: false }],
     ["/api/dashboard/events", { method: "GET", label: "リアルタイム監視", calls: 0, errors: 0, trackActivity: false }],
     ["/api/dashboard/actions", { method: "POST", label: "デバイス手動操作", calls: 0, errors: 0 }],
@@ -186,6 +219,11 @@ function publicDashboardState() {
         services,
         endpoints,
         sensors: publicSensorState(),
+        behavior: behaviorArchitecture.snapshot(),
+        memory: {
+            pendingProposalCount: memoryStore.list({ status: "pending" }).length,
+            acceptedCount: memoryStore.list({ status: "accepted" }).length,
+        },
         activity: recentActivity.slice(0, 60),
         capabilities: {
             ttsEnabled: TTS_ENABLED,
@@ -300,10 +338,21 @@ async function pollSensor() {
             });
             return;
         }
+        const data = await res.json();
         latestSensor = {
             ...latestSensor,
-            ...(await res.json()),
+            ...data,
         };
+        ingestObservation({
+            type: "sensor.environment_sample",
+            source: "bme280",
+            payload: {
+                temperature: data.temperature ?? data.temp,
+                humidity: data.humidity,
+                pressure: data.pressure,
+                units: SENSOR_UNITS,
+            },
+        });
         updateService("bme280", {
             status: "online",
             detail: "Receiving environment data",
@@ -353,6 +402,14 @@ async function pollBrightnessSensor() {
             ...latestSensor,
             brightness,
         };
+        ingestObservation({
+            type: "sensor.brightness_sample",
+            source: "cds",
+            payload: {
+                brightness,
+                unit: SENSOR_UNITS.brightness,
+            },
+        });
         updateService("brightness", {
             status: "online",
             detail: "Receiving brightness data",
@@ -614,6 +671,11 @@ function auditLLMJson(payload) {
         if (requestsError) return { ok: false, reason: requestsError };
     }
 
+    if ("memory_proposals" in payload) {
+        const memoryError = validateMemoryProposals(payload.memory_proposals);
+        if (memoryError) return { ok: false, reason: memoryError };
+    }
+
     return { ok: true, payload };
 }
 
@@ -835,16 +897,19 @@ function scheduleVisionTempFileCleanup({ imagePath, tempDirectory }) {
 
 async function sendVisionImageToChatGPT(request) {
     const snapshot = await fetchVisionSnapshot();
+    const context = await buildCognitiveContext({
+        type: "request.vision_input",
+        source: "kernel",
+        payload: {
+            task: request.params.task,
+            query: config.vision.defaultQuery,
+            input: "attached_image",
+        },
+    });
     await enqueueChatOperation(async () => {
         const temporaryFile = await attachImageToChatGPT(snapshot);
         try {
-            await sendJsonToChatGPTNow({
-                vision: {
-                    task: request.params.task,
-                    query: config.vision.defaultQuery,
-                    input: "attached_image",
-                },
-            });
+            await sendJsonToChatGPTNow(context);
         } finally {
             // DOM.setFileInputFiles creates a path-backed File. ChatGPT reads it
             // asynchronously while uploading to files.oaiusercontent.com, so an
@@ -1116,6 +1181,19 @@ function buildSensorResponse(requests) {
 }
 
 async function executeAuditedPayload(payload) {
+    if ("memory_proposals" in payload && payload.memory_proposals.length > 0) {
+        const added = await memoryStore.addProposals(payload.memory_proposals, { source: "chatgpt" });
+        console.log("memory proposals queued for review:", added.map((record) => record.id));
+        recordActivity({
+            category: "memory",
+            status: "success",
+            title: "Memory proposals queued",
+            summary: `${added.length} proposal(s) require Kernel review`,
+            service: "kernel",
+            payload: added,
+        });
+    }
+
     if ("speech" in payload) {
         console.log("speech:", {
             speech: payload.speech,
@@ -1142,7 +1220,11 @@ async function executeAuditedPayload(payload) {
 
         const sensorResponse = buildSensorResponse(payload.requests);
         if (sensorResponse) {
-            await sendJsonToChatGPT(sensorResponse);
+            await sendObservationToChatGPT({
+                type: "request.sensor_result",
+                source: "kernel",
+                payload: sensorResponse,
+            });
         } else if (payload.requests.some((request) => typeof request === "string")) {
             console.log("sensor response skipped: no requested sensor values available");
         }
@@ -1230,9 +1312,6 @@ app.post("/api/dashboard/actions", async (req, res) => {
 
 app.post(config.routes.yoloEvent, async (req, res) => {
     console.log("YOLO event:", req.body);
-    if (!page) {
-        return res.status(503).json({ error: "ChatGPT page is not ready" });
-    }
     let event;
     try {
         event = normalizeVisionEvent(req.body);
@@ -1252,7 +1331,18 @@ app.post(config.routes.yoloEvent, async (req, res) => {
     processedVisionEventIds.add(event.event_id);
 
     try {
-        await sendJsonToChatGPT({ event });
+        await sendObservationToChatGPT({
+            id: event.event_id,
+            type: `vision.${event.type}`,
+            source: event.source,
+            observed_at: event.timestamp,
+            payload: {
+                track_id: event.track_id,
+                identity: event.identity,
+                message: event.message,
+                ...(event.position ? { position: event.position } : {}),
+            },
+        });
         return res.sendStatus(200);
     } catch (err) {
         processedVisionEventIds.delete(event.event_id);
@@ -1283,19 +1373,71 @@ app.post(config.routes.touchSensorInput, async (req, res) => {
         return res.status(400).json({ error: "unknown touch sensor" });
     }
 
+    const action = event.type === config.touch.startedType ? config.touch.startedAction : config.touch.endedAction;
     const semanticEvent = {
-        event: {
-            source: config.touch.source,
-            action: event.type === config.touch.startedType ? config.touch.startedAction : config.touch.endedAction,
-            body_part: bodyPart,
-            timestamp: event.timestamp,
-        },
+        source: config.touch.source,
+        action,
+        body_part: bodyPart,
+        timestamp: event.timestamp,
     };
 
     console.log("accepted touch event:", semanticEvent);
-    await sendJsonToChatGPT(semanticEvent);
+    try {
+        await sendObservationToChatGPT({
+            type: `touch.${action}`,
+            source: config.touch.source,
+            observed_at: event.timestamp,
+            payload: { body_part: bodyPart },
+        });
+        return res.json({ status: "OK" });
+    } catch (err) {
+        console.error("touch event delivery failed:", err.message);
+        return res.status(503).json({ error: "ChatGPT delivery failed" });
+    }
+});
 
-    return res.json({ status: "OK" });
+app.get(config.routes.behaviorState, (req, res) => {
+    res.set("Cache-Control", "no-store");
+    res.json(behaviorArchitecture.snapshot());
+});
+
+async function runSpontaneousBehaviorTick() {
+    const eligible = behaviorArchitecture.peekPendingProposals()
+        .some((proposal) => proposal.priority >= config.behavior.spontaneous.minimum_priority);
+    if (!eligible) return null;
+    return sendObservationToChatGPT({
+        type: "system.spontaneous_tick",
+        source: "kernel",
+        payload: { reason: "pending_behavior_proposal" },
+    });
+}
+
+app.post(config.routes.behaviorTick, async (req, res) => {
+    try {
+        const context = await runSpontaneousBehaviorTick();
+        if (!context) return res.status(204).send();
+        return res.json({ status: "sent", proposal_count: context.behavior.proposals.length });
+    } catch (err) {
+        return res.status(503).json({ error: err.message });
+    }
+});
+
+app.get(config.routes.memoryProposals, async (req, res) => {
+    await memoryReady;
+    const status = typeof req.query.status === "string" ? req.query.status : undefined;
+    res.set("Cache-Control", "no-store");
+    res.json({ records: memoryStore.list({ status }) });
+});
+
+app.post(`${config.routes.memoryProposals}/:id/decision`, async (req, res) => {
+    await memoryReady;
+    try {
+        const record = await memoryStore.decide(req.params.id, req.body.decision);
+        if (!record) return res.status(404).json({ error: "memory proposal not found" });
+        return res.json(record);
+    } catch (err) {
+        return res.status(400).json({ error: err.message });
+    }
 });
 
 app.listen(config.server.port, () => {
@@ -1309,6 +1451,22 @@ app.listen(config.server.port, () => {
     });
 });
 
+if (config.behavior.spontaneous.enabled) {
+    let spontaneousTickRunning = false;
+    const timer = setInterval(async () => {
+        if (spontaneousTickRunning || !page) return;
+        spontaneousTickRunning = true;
+        try {
+            await runSpontaneousBehaviorTick();
+        } catch (err) {
+            console.error("spontaneous behavior tick failed:", err.message);
+        } finally {
+            spontaneousTickRunning = false;
+        }
+    }, config.behavior.spontaneous.interval_ms);
+    timer.unref();
+}
+
 /* ---------------------------
    User input endpoint
 --------------------------- */
@@ -1319,11 +1477,16 @@ app.post(config.routes.userInput, async (req, res) => {
         return res.status(400).json({ error: "text must be a non-empty string" });
     }
 
-    await sendJsonToChatGPT({
-        user_input: text.trim(),
-    });
-
-    return res.json({ status: "OK" });
+    try {
+        await sendObservationToChatGPT({
+            type: "interaction.user_input",
+            source: "user_input_api",
+            payload: { text: text.trim() },
+        });
+        return res.json({ status: "OK" });
+    } catch (err) {
+        return res.status(503).json({ error: "ChatGPT delivery failed" });
+    }
 });
 
 /* ==========================================================================

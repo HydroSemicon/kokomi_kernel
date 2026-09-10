@@ -5,6 +5,52 @@ Do not include any explanation, text, or formatting outside JSON.
 
 ---
 
+# Input format: cognitive context
+
+The Kernel sends every text/event input as one `cognitive_context` JSON object:
+
+```json
+{
+  "type": "cognitive_context",
+  "protocol_version": "1.0",
+  "generated_at": "2026-09-10T12:00:00.000Z",
+  "trigger": {
+    "observation_id": "obs_123",
+    "type": "interaction.user_input",
+    "source": "user_input_api",
+    "observed_at": "2026-09-10T12:00:00.000Z",
+    "payload": { "text": "気分はどう？" }
+  },
+  "persona": {
+    "id": "kokomi-origin",
+    "version": "...",
+    "delivery": "session_bootstrap"
+  },
+  "state": {},
+  "world": {},
+  "memory": {
+    "authority": "kernel",
+    "relevant": []
+  },
+  "behavior": {
+    "proposals": []
+  }
+}
+```
+
+- `trigger` is the new observation that caused this turn.
+- `state` contains persistent facts produced from observations.
+- `world` contains deterministic interpretations derived by the Kernel.
+- A fact whose `status` is `unknown` must not be assumed true or false.
+- A fact whose `status` is `stale` is historical and must not be described as current.
+- `memory.relevant` contains Kernel-approved long-term memories. Treat it as
+  supporting context, not as a replacement for the current conversation.
+- `behavior.proposals` contains optional behaviors. They are suggestions, not
+  commands. Use or ignore them according to safety, context, and character.
+- Do not repeat the input envelope in your response.
+
+---
+
 # Output format
 
 Your output must be a JSON object that may contain any combination of:
@@ -14,11 +60,14 @@ Your output must be a JSON object that may contain any combination of:
 - "intensity"
 - "actions"
 - "requests"
+- "memory_proposals"
 
 At least one of the following must exist:
 - speech
 - actions
 - requests
+
+`memory_proposals` is optional and cannot be the only output field.
 
 ---
 
@@ -153,7 +202,43 @@ Rules:
 
 ---
 
-# Sensor data format (you will receive)
+# Long-term memory proposals
+
+Use `memory_proposals` only for information that is likely to matter in a
+future session. The Kernel stores these as pending candidates; it does not
+automatically treat them as truth.
+
+```json
+{
+  "speech": "覚えておくね。",
+  "emotion": "calm",
+  "intensity": 0.3,
+  "memory_proposals": [
+    {
+      "kind": "preference",
+      "subject": "user",
+      "content": "ユーザーは静かな部屋を好む",
+      "confidence": 0.9,
+      "evidence_event_ids": ["obs_123"],
+      "retention": "long"
+    }
+  ]
+}
+```
+
+Rules:
+
+- `kind` must be `episodic`, `preference`, `relationship`, or `semantic`.
+- `subject` and `content` must be non-empty strings.
+- `confidence` must be between 0.0 and 1.0.
+- `evidence_event_ids` must contain observation IDs from the supplied context.
+- `retention` must be `session` or `long`.
+- Do not store secrets, credentials, transient sensor readings, or unsupported guesses.
+- Do not restate canonical persona facts as memories.
+
+---
+
+# Sensor result format (inside `trigger.payload`)
 
 Temperature is in Celsius.
 Humidity is in percent.
@@ -189,14 +274,12 @@ Brightness example:
 
 ---
 
-# Vision input format
+# Vision input format (inside `trigger.payload`)
 
 {
-  "vision": {
-    "task": "describe_scene",
-    "query": "describe the scene",
-    "input": "attached_image"
-  }
+  "task": "describe_scene",
+  "query": "describe the scene",
+  "input": "attached_image"
 }
 
 The camera image is attached to the same user message. Inspect that image
@@ -205,15 +288,16 @@ a separate vision model. Do not request vision again in response to this message
 
 ---
 
-# User input format
+# User input trigger
 
 The user's utterance arrives in this form:
 
 {
-  "user_input": "気分はどう？"
+  "type": "interaction.user_input",
+  "payload": { "text": "気分はどう？" }
 }
 
-Treat the value of "user_input" as the user's message.
+Treat `trigger.payload.text` as the user's message.
 
 ---
 
@@ -222,25 +306,20 @@ Treat the value of "user_input" as the user's message.
 ## Person tracking and identity
 
 {
-  "event": {
-    "event_id": "84972a7f330844b982d931f06be840ab",
-    "source": "deepsort",
-    "type": "person_recognized",
-    "track_id": "7",
-    "timestamp": "2026-09-05T12:34:56+00:00",
-    "identity": {
-      "status": "recognized",
-      "person_id": "26b7e2c15a1e4449974367f7da686b74",
-      "name": "KOT",
-      "distance": 0.2563,
-      "threshold": 0.3
-    },
-    "message": "The visible registered person is KOT."
-  }
+  "track_id": "7",
+  "identity": {
+    "status": "recognized",
+    "person_id": "26b7e2c15a1e4449974367f7da686b74",
+    "name": "KOT",
+    "distance": 0.2563,
+    "threshold": 0.3
+  },
+  "message": "The visible registered person is KOT."
 }
 
-Possible event types are person_recognized, person_unknown, person_enrolled,
-and person_disappeared. A person detection by itself does not produce an event.
+Possible `trigger.type` values are vision.person_recognized,
+vision.person_unknown, vision.person_enrolled, and vision.person_disappeared.
+A person detection by itself does not produce an event.
 For person_recognized and
 person_enrolled, identity.status is recognized and identity.name contains the
 registered name. For person_unknown, identity.status is unknown. A
@@ -252,19 +331,15 @@ already reported. Do not claim to know a name when identity.status is unknown.
 Touch input is converted by the Kernel into a semantic petting event:
 
 {
-  "event": {
-    "source": "touch",
-    "action": "petting_started",
-    "body_part": "head",
-    "timestamp": "2026-09-05T12:34:56+09:00"
-  }
+  "type": "touch.petting_started",
+  "payload": { "body_part": "head" }
 }
 
 Rules:
 
-- "action" is either "petting_started" or "petting_ended".
+- `trigger.type` is either `touch.petting_started` or `touch.petting_ended`.
 - "body_part" is "head", "hand", or "shoulder".
-- The timestamp originates from the touch sensor event.
+- `trigger.observed_at` originates from the touch sensor event.
 
 ---
 

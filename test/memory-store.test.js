@@ -29,10 +29,28 @@ test("memory proposals remain pending until the Kernel accepts them", async (con
     const retrieved = store.retrieve("静かな部屋が好き");
     assert.equal(retrieved.length, 1);
     assert.equal(retrieved[0].id, pending.id);
+    assert.equal(retrieved[0].retrieval_method, "hybrid_lexical_hash_v1");
+    await assert.rejects(store.decide(pending.id, "rejected"), /already been decided/u);
 
     const reloaded = new MemoryStore({ filePath });
     await reloaded.initialize();
     assert.equal(reloaded.list({ status: "accepted" }).length, 1);
+});
+
+test("accepting a near-duplicate memory supersedes the older record without deleting history", async () => {
+    const store = new MemoryStore();
+    const [older] = await store.addProposals([validProposal]);
+    await store.decide(older.id, "accepted");
+    const [newer] = await store.addProposals([{
+        ...validProposal,
+        content: "ユーザーは静かな部屋を好む。",
+        evidence_event_ids: ["obs_2"],
+    }]);
+    const accepted = await store.decide(newer.id, "accepted");
+
+    assert.deepEqual(accepted.consolidated_ids, [older.id]);
+    assert.equal(store.list({ status: "superseded" })[0].superseded_by, newer.id);
+    assert.deepEqual(store.retrieve("静かな部屋").map((record) => record.id), [newer.id]);
 });
 
 test("memory proposal schema rejects ungrounded or malformed records", () => {

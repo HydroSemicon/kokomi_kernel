@@ -1,6 +1,7 @@
 import { randomUUID } from "crypto";
 
 const TYPE_PATTERN = /^[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)+$/;
+const ID_PATTERN = /^[A-Za-z0-9_.:-]{1,128}$/;
 
 function isPlainObject(value) {
     return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -24,6 +25,12 @@ export function createObservation(input, { now = () => new Date().toISOString() 
     }
     if (typeof input.source !== "string" || input.source.trim() === "") {
         throw new TypeError("observation source must be a non-empty string");
+    }
+    if (input.source.trim().length > 128) {
+        throw new TypeError("observation source must be at most 128 characters");
+    }
+    if (input.id !== undefined && (typeof input.id !== "string" || !ID_PATTERN.test(input.id))) {
+        throw new TypeError("observation id must contain 1 to 128 safe identifier characters");
     }
     if (!isPlainObject(input.payload)) {
         throw new TypeError("observation payload must be an object");

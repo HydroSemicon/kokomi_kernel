@@ -58,6 +58,11 @@ export class WorldModel {
                     ? derivedFact(state.interaction.being_petted.value, ["interaction.being_petted"])
                     : unknownFact("no_fresh_touch_evidence"),
             },
+            agency: {
+                last_action_status: state.action.last_outcome.status === "known"
+                    ? derivedFact(state.action.last_outcome.value.status, ["action.last_outcome"])
+                    : unknownFact("no_action_outcome"),
+            },
         };
     }
 

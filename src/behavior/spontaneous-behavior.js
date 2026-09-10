@@ -9,11 +9,12 @@ export class SpontaneousBehaviorEngine {
             respond_to_touch_ms: cooldowns.respond_to_touch_ms ?? 10_000,
             mention_temperature_ms: cooldowns.mention_temperature_ms ?? 900_000,
             mention_darkness_ms: cooldowns.mention_darkness_ms ?? 900_000,
+            homeostasis_ms: cooldowns.homeostasis_ms ?? 300_000,
         };
         this.lastEmittedAt = new Map();
     }
 
-    evaluate({ observation, world }) {
+    evaluate({ observation, world, drives = {} }) {
         const candidates = [];
         const personPresent = world.room.is_occupied.value === true;
 
@@ -55,6 +56,17 @@ export class SpontaneousBehaviorEngine {
                 cooldownKey: "mention_darkness",
                 reason: "room_is_dark",
                 context: {},
+            }));
+        }
+
+        const dominantDrive = drives.dominant?.[0];
+        if (dominantDrive?.level >= 0.75) {
+            candidates.push(this.#candidate({
+                kind: "homeostasis.consider_regulation",
+                priority: Math.round(50 + dominantDrive.level * 35),
+                cooldownKey: "homeostasis",
+                reason: `dominant_drive_${dominantDrive.name}`,
+                context: { drive: dominantDrive },
             }));
         }
 

@@ -11,7 +11,12 @@ import { fileURLToPath } from "url";
 import "dotenv/config";
 import { BehaviorArchitecture } from "./src/behavior/index.js";
 import { observationSearchText } from "./src/behavior/observation.js";
-import { MemoryStore, validateMemoryProposals } from "./src/memory/memory-store.js";
+import { MemoryStore } from "./src/memory/memory-store.js";
+import { EventStore } from "./src/behavior/event-store.js";
+import { ActionGate } from "./src/behavior/action-gate.js";
+import { SocialStateStore } from "./src/social/social-state-store.js";
+import { TurnRegistry } from "./src/behavior/turn-registry.js";
+import { LlmResponseProtocol } from "./src/protocol/llm-response.js";
 
 const config = JSON.parse(fs.readFileSync(new URL("./config.json", import.meta.url), "utf8"));
 
@@ -20,8 +25,6 @@ puppeteer.use(StealthPlugin());
 const CHAT_INPUT_SELECTOR = config.browser.chatInputSelector;
 const REMOTE_DEBUGGING_URL = config.browser.remoteDebuggingUrl;
 const CHATGPT_URL = config.browser.chatgptUrl;
-const VALID_TOP_LEVEL_FIELDS = new Set(config.audit.validTopLevelFields);
-const VALID_EMOTIONS = new Set(config.audit.validEmotions);
 const SENSOR_UNITS = config.sensors.units;
 
 /* ---------------------------
@@ -42,6 +45,44 @@ const memoryStore = new MemoryStore({
     filePath: path.resolve(repositoryDirectory, config.memory.storagePath),
 });
 const memoryReady = memoryStore.initialize();
+const eventStore = new EventStore({
+    filePath: path.resolve(repositoryDirectory, config.persistence.eventLogPath),
+    maxReplayEvents: config.persistence.maxReplayEvents,
+    sensorCheckpointMs: config.persistence.sensorCheckpointMs,
+});
+const socialStore = new SocialStateStore({
+    filePath: path.resolve(repositoryDirectory, config.social.storagePath),
+    visiblePersonTtlMs: config.behavior.freshness.person_ms,
+});
+const actionGate = new ActionGate({
+    config: config.actionGate,
+    boundaryProvider: socialStore,
+});
+const responseProtocol = new LlmResponseProtocol(config);
+const turnRegistry = new TurnRegistry({
+    maxPending: config.audit.maxPendingTurns,
+    ttlMs: config.audit.pendingTurnTtlMs,
+});
+const eventReady = eventStore.initialize();
+const socialReady = socialStore.initialize();
+const runtimeReady = Promise.all([memoryReady, socialReady, eventReady]).then(async ([, , observations]) => {
+    for (const observation of observations) {
+        behaviorArchitecture.observe(observation, { generateProposals: false });
+        socialStore.observe(observation);
+        if (observation.type === "action.intention") actionGate.restoreIntention(observation.payload);
+        if (observation.type === "action.outcome") actionGate.restoreOutcome(observation.payload);
+    }
+    for (const outcome of actionGate.reconcileInterrupted()) {
+        const observation = behaviorArchitecture.observe({
+            type: "action.outcome",
+            source: "kernel_recovery",
+            observed_at: outcome.completed_at,
+            payload: outcome,
+        }, { generateProposals: false }).observation;
+        socialStore.observe(observation);
+        await eventStore.append(observation, { force: true });
+    }
+});
 
 if (TTS_ENABLED && !ELEVENLABS_API_KEY) {
     throw new Error("ELEVENLABS_API_KEY is required. Set it in .env.");
@@ -55,24 +96,41 @@ let blueskyAgent = null;
 let blueskyLoginPromise = null;
 const processedVisionEventIds = new Set();
 
-function ingestObservation(input) {
+async function ingestObservation(input, { forcePersist = false } = {}) {
+    await runtimeReady;
     const result = behaviorArchitecture.observe(input);
+    socialStore.observe(result.observation);
+    await eventStore.append(result.observation, { force: forcePersist });
     broadcastDashboard("behavior", behaviorArchitecture.snapshot());
     return result;
 }
 
-async function buildCognitiveContext(input, { consumeProposals = true } = {}) {
-    await memoryReady;
-    const { observation } = ingestObservation(input);
+async function buildCognitiveContext(input, { consumeProposals = true, minimumProposalPriority = 0 } = {}) {
+    const { observation } = await ingestObservation(input, { forcePersist: true });
     const memories = memoryStore.retrieve(observationSearchText(observation), {
         limit: config.memory.retrievalLimit,
     });
-    return behaviorArchitecture.composeContext(observation, { memories, consumeProposals });
+    return behaviorArchitecture.composeContext(observation, {
+        memories,
+        social: socialStore.context(),
+        actionGate: actionGate.snapshot(),
+        consumeProposals: false,
+        leaseProposals: consumeProposals,
+        minimumProposalPriority,
+    });
 }
 
 async function sendObservationToChatGPT(input, options) {
     const context = await buildCognitiveContext(input, options);
-    await sendJsonToChatGPT(context);
+    turnRegistry.register(context);
+    try {
+        await sendJsonToChatGPT(context);
+        behaviorArchitecture.acknowledgeProposalLease(context.turn_id);
+    } catch (error) {
+        turnRegistry.remove(context.turn_id);
+        behaviorArchitecture.releaseProposalLease(context.turn_id);
+        throw error;
+    }
     return context;
 }
 
@@ -104,9 +162,12 @@ const endpointState = new Map([
     [config.routes.userInput, { method: "POST", label: "ユーザー入力", calls: 0, errors: 0 }],
     [config.routes.touchSensorInput, { method: "POST", label: "タッチセンサー", calls: 0, errors: 0 }],
     [config.routes.yoloEvent, { method: "POST", label: "人物認識イベント", calls: 0, errors: 0 }],
+    [config.routes.audioClassification, { method: "POST", label: "音声分類イベント", calls: 0, errors: 0 }],
+    [config.routes.internalState, { method: "POST", label: "身体内部状態", calls: 0, errors: 0 }],
     [config.routes.behaviorState, { method: "GET", label: "行動状態スナップショット", calls: 0, errors: 0, trackActivity: false }],
     [config.routes.behaviorTick, { method: "POST", label: "自発行動ティック", calls: 0, errors: 0 }],
     [config.routes.memoryProposals, { method: "GET", label: "記憶候補一覧", calls: 0, errors: 0, trackActivity: false }],
+    [config.routes.socialProposals, { method: "GET", label: "社会状態候補一覧", calls: 0, errors: 0, trackActivity: false }],
     ["/api/dashboard/status", { method: "GET", label: "監視スナップショット", calls: 0, errors: 0, trackActivity: false }],
     ["/api/dashboard/events", { method: "GET", label: "リアルタイム監視", calls: 0, errors: 0, trackActivity: false }],
     ["/api/dashboard/actions", { method: "POST", label: "デバイス手動操作", calls: 0, errors: 0 }],
@@ -224,6 +285,13 @@ function publicDashboardState() {
             pendingProposalCount: memoryStore.list({ status: "pending" }).length,
             acceptedCount: memoryStore.list({ status: "accepted" }).length,
         },
+        social: {
+            ...socialStore.context(),
+            pendingProposalCount: socialStore.list({ status: "pending" }).length,
+        },
+        actionGate: actionGate.snapshot(),
+        cognitiveTurns: turnRegistry.snapshot(),
+        persistence: eventStore.snapshot(),
         activity: recentActivity.slice(0, 60),
         capabilities: {
             ttsEnabled: TTS_ENABLED,
@@ -343,7 +411,7 @@ async function pollSensor() {
             ...latestSensor,
             ...data,
         };
-        ingestObservation({
+        await ingestObservation({
             type: "sensor.environment_sample",
             source: "bme280",
             payload: {
@@ -402,7 +470,7 @@ async function pollBrightnessSensor() {
             ...latestSensor,
             brightness,
         };
-        ingestObservation({
+        await ingestObservation({
             type: "sensor.brightness_sample",
             source: "cds",
             payload: {
@@ -505,178 +573,17 @@ function hasExactlyKeys(obj, keys) {
     return actual.length === keys.length && keys.every((key) => actual.includes(key));
 }
 
-function validateSpeech(payload) {
-    const hasSpeech = Object.prototype.hasOwnProperty.call(payload, "speech");
-    const hasEmotion = Object.prototype.hasOwnProperty.call(payload, "emotion");
-    const hasIntensity = Object.prototype.hasOwnProperty.call(payload, "intensity");
-
-    if (!hasSpeech) {
-        if (hasEmotion || hasIntensity) {
-            return "emotion and intensity must not exist without speech";
+function validateProposalEvidence(payload) {
+    const proposals = [
+        ...(payload.memory_proposals ?? []),
+        ...(payload.social_proposals ?? []),
+    ];
+    for (const proposal of proposals) {
+        for (const eventId of proposal.evidence_event_ids) {
+            if (!eventStore.has(eventId)) return `proposal evidence event does not exist: ${eventId}`;
         }
-        return null;
     }
-
-    if (!hasEmotion || !hasIntensity) {
-        return "speech requires emotion and intensity";
-    }
-    if (typeof payload.speech !== "string") {
-        return "speech must be a string";
-    }
-    if (!VALID_EMOTIONS.has(payload.emotion)) {
-        return "emotion is invalid";
-    }
-    if (typeof payload.intensity !== "number" || !Number.isFinite(payload.intensity)) {
-        return "intensity must be a finite number";
-    }
-    if (payload.intensity < config.audit.intensityMin || payload.intensity > config.audit.intensityMax) {
-        return `intensity must be from ${config.audit.intensityMin.toFixed(1)} to ${config.audit.intensityMax.toFixed(1)}`;
-    }
-
     return null;
-}
-
-function validateActions(actions) {
-    if (!Array.isArray(actions)) {
-        return "actions must be an array";
-    }
-
-    for (const action of actions) {
-        if (!isPlainObject(action) || !hasExactlyKeys(action, ["type", "params"])) {
-            return "each action must be an object with exactly type and params";
-        }
-        if (!isPlainObject(action.params)) {
-            return "action params must be an object";
-        }
-
-        if (action.type === "tear") {
-            if (!hasExactlyKeys(action.params, ["speed", "duration"])) {
-                return "tear params must contain exactly speed and duration";
-            }
-            if (!Number.isInteger(action.params.speed) || action.params.speed < config.actions.tear.speedMin || action.params.speed > config.actions.tear.speedMax) {
-                return `tear speed must be an integer from ${config.actions.tear.speedMin} to ${config.actions.tear.speedMax}`;
-            }
-            if (!Number.isInteger(action.params.duration) || action.params.duration < config.actions.tear.durationMin || action.params.duration > config.actions.tear.durationMax) {
-                return `tear duration must be an integer from ${config.actions.tear.durationMin} to ${config.actions.tear.durationMax}`;
-            }
-            continue;
-        }
-
-        if (action.type === "led_change") {
-            if (!hasExactlyKeys(action.params, ["color"])) {
-                return "led_change params must contain exactly color";
-            }
-            if (typeof action.params.color !== "string" || !new RegExp(config.actions.ledChange.colorPattern).test(action.params.color)) {
-                return "led_change color must be #RRGGBB";
-            }
-            continue;
-        }
-
-        if (action.type === "bluesky_post") {
-            if (!hasExactlyKeys(action.params, ["text"])) {
-                return "bluesky_post params must contain exactly text";
-            }
-            if (typeof action.params.text !== "string" || action.params.text.trim() === "") {
-                return "bluesky_post text must be a non-empty string";
-            }
-            if (action.params.text.length > config.actions.blueskyPost.maxTextLength) {
-                return `bluesky_post text must be ${config.actions.blueskyPost.maxTextLength} characters or fewer`;
-            }
-            continue;
-        }
-
-        if (action.type === "remember_person") {
-            if (!hasExactlyKeys(action.params, ["track_id", "name"])) {
-                return "remember_person params must contain exactly track_id and name";
-            }
-            const trackId = action.params.track_id;
-            if ((typeof trackId !== "string" && !Number.isInteger(trackId)) || String(trackId).trim() === "") {
-                return "remember_person track_id must be a non-empty string or integer";
-            }
-            if (typeof action.params.name !== "string" || action.params.name.trim() === "") {
-                return "remember_person name must be a non-empty string";
-            }
-            if (action.params.name.trim().length > config.faceMemory.maxNameLength) {
-                return `remember_person name must be ${config.faceMemory.maxNameLength} characters or fewer`;
-            }
-            if ([...action.params.name].some((character) => character.charCodeAt(0) < 32)) {
-                return "remember_person name must not contain control characters";
-            }
-            continue;
-        }
-
-        return `unknown action type: ${action.type}`;
-    }
-
-    return null;
-}
-
-function validateRequests(requests) {
-    if (!Array.isArray(requests)) {
-        return "requests must be an array";
-    }
-
-    const validSensorRequests = new Set(Object.keys(config.sensors.units));
-
-    for (const request of requests) {
-        if (typeof request === "string") {
-            if (!validSensorRequests.has(request)) {
-                return `unknown request: ${request}`;
-            }
-            continue;
-        }
-
-        if (!isPlainObject(request) || !hasExactlyKeys(request, ["type", "params"])) {
-            return "object request must contain exactly type and params";
-        }
-        if (request.type !== "vision") {
-            return `unknown request type: ${request.type}`;
-        }
-        if (!isPlainObject(request.params) || !hasExactlyKeys(request.params, ["task"])) {
-            return "vision params must contain exactly task";
-        }
-        if (request.params.task !== config.vision.task) {
-            return `vision task must be ${config.vision.task}`;
-        }
-    }
-
-    return null;
-}
-
-function auditLLMJson(payload) {
-    if (!isPlainObject(payload)) {
-        return { ok: false, reason: "payload must be a JSON object" };
-    }
-
-    for (const field of Object.keys(payload)) {
-        if (!VALID_TOP_LEVEL_FIELDS.has(field)) {
-            return { ok: false, reason: `unknown top-level field: ${field}` };
-        }
-    }
-
-    if (!("speech" in payload) && !("actions" in payload) && !("requests" in payload)) {
-        return { ok: false, reason: "payload must include speech, actions, or requests" };
-    }
-
-    const speechError = validateSpeech(payload);
-    if (speechError) return { ok: false, reason: speechError };
-
-    if ("actions" in payload) {
-        const actionsError = validateActions(payload.actions);
-        if (actionsError) return { ok: false, reason: actionsError };
-    }
-
-    if ("requests" in payload) {
-        const requestsError = validateRequests(payload.requests);
-        if (requestsError) return { ok: false, reason: requestsError };
-    }
-
-    if ("memory_proposals" in payload) {
-        const memoryError = validateMemoryProposals(payload.memory_proposals);
-        if (memoryError) return { ok: false, reason: memoryError };
-    }
-
-    return { ok: true, payload };
 }
 
 /* ---------------------------
@@ -710,7 +617,11 @@ async function sendJsonToChatGPTNow(obj) {
     await page.waitForSelector(config.browser.enabledSendButtonSelector);
     await page.click(config.browser.sendButtonSelector);
 
-    console.log("ChatGPT JSON sent:", json);
+    console.log("ChatGPT JSON sent:", {
+        turn_id: obj.turn_id ?? null,
+        trigger_type: obj.trigger?.type ?? obj.type,
+        bytes: Buffer.byteLength(json, "utf8"),
+    });
 }
 
 function sendJsonToChatGPT(obj) {
@@ -950,6 +861,7 @@ async function sendActionToPi(action) {
             durationMs: Date.now() - startedAt,
         });
         console.log("executed action:", action, "status:", res.status);
+        return { accepted: true, status_code: res.status };
     } catch (err) {
         updateService("actuators", {
             status: "offline",
@@ -1002,8 +914,9 @@ async function sendBlueskyPost(action) {
     const text = action.params.text.trim();
     const agent = await getBlueskyAgent();
 
-    await agent.post({ text });
+    const result = await agent.post({ text });
     console.log("posted to Bluesky:", text);
+    return { accepted: true, uri: result?.uri ?? null };
 }
 
 async function rememberPerson(action) {
@@ -1034,6 +947,7 @@ async function rememberPerson(action) {
             latencyMs: Date.now() - startedAt,
         });
         console.log("face enrollment started:", body.person);
+        return { accepted: true, enrollment_status: body.person.status, track_id: String(action.params.track_id) };
     } catch (err) {
         updateService("faceMemory", {
             status: "offline",
@@ -1048,16 +962,14 @@ async function rememberPerson(action) {
 
 async function executeAction(action) {
     if (action.type === "bluesky_post") {
-        await sendBlueskyPost(action);
-        return;
+        return sendBlueskyPost(action);
     }
 
     if (action.type === "remember_person") {
-        await rememberPerson(action);
-        return;
+        return rememberPerson(action);
     }
 
-    await sendActionToPi(action);
+    return sendActionToPi(action);
 }
 
 function normalizeVisionIdentity(identity) {
@@ -1180,7 +1092,79 @@ function buildSensorResponse(requests) {
     return { sensor, units };
 }
 
-async function executeAuditedPayload(payload) {
+function buildKernelQueryResult(request) {
+    const resource = request.params.resource;
+    const behavior = behaviorArchitecture.snapshot();
+    const result = {
+        state: behavior.state,
+        world: behavior.world,
+        drives: behavior.drives,
+        social: socialStore.context(),
+        memory: memoryStore.retrieve(request.params.query ?? "", { limit: config.memory.retrievalLimit }),
+        action: actionGate.snapshot(),
+    }[resource];
+    return { resource, result };
+}
+
+async function reportActionOutcome(outcome, { reportToLlm = config.outcomes.reportToLlm } = {}) {
+    const observation = {
+        type: "action.outcome",
+        source: "kernel_action_gate",
+        observed_at: outcome.completed_at,
+        payload: outcome,
+    };
+    if (!reportToLlm) {
+        await ingestObservation(observation);
+        return;
+    }
+    try {
+        await sendObservationToChatGPT(observation, { consumeProposals: false });
+    } catch (error) {
+        console.error("action outcome persisted but could not be reported to ChatGPT:", error.message);
+    }
+}
+
+async function executeGatedAction(action, { turnId, context, reportToLlm = true } = {}) {
+    const proposal = actionGate.propose({ turnId, action, context });
+    if (!proposal.allowed) {
+        const outcome = actionGate.deniedOutcome({
+            turnId,
+            action,
+            reason: proposal.reason,
+            hash: proposal.hash,
+        });
+        recordActivity({
+            category: "control",
+            status: "error",
+            title: "Action denied by Kernel",
+            summary: proposal.reason,
+            direction: "outbound",
+            service: "action-gate",
+            payload: { action, outcome },
+        });
+        await reportActionOutcome(outcome, { reportToLlm });
+        return outcome;
+    }
+
+    await ingestObservation({
+        type: "action.intention",
+        source: "kernel_action_gate",
+        observed_at: proposal.intention.proposed_at,
+        payload: proposal.intention,
+    });
+
+    let outcome;
+    try {
+        const result = await executeAction(action);
+        outcome = actionGate.close(proposal.intention, { status: "succeeded", result });
+    } catch (error) {
+        outcome = actionGate.close(proposal.intention, { status: "failed", error: error.message });
+    }
+    await reportActionOutcome(outcome, { reportToLlm });
+    return outcome;
+}
+
+async function executeAuditedPayload(payload, { context } = {}) {
     if ("memory_proposals" in payload && payload.memory_proposals.length > 0) {
         const added = await memoryStore.addProposals(payload.memory_proposals, { source: "chatgpt" });
         console.log("memory proposals queued for review:", added.map((record) => record.id));
@@ -1194,24 +1178,48 @@ async function executeAuditedPayload(payload) {
         });
     }
 
+    if ("social_proposals" in payload && payload.social_proposals.length > 0) {
+        const added = await socialStore.addProposals(payload.social_proposals, { source: "chatgpt" });
+        recordActivity({
+            category: "social",
+            status: "success",
+            title: "Social proposals queued",
+            summary: `${added.length} proposal(s) require Kernel review`,
+            service: "kernel",
+            payload: added,
+        });
+    }
+
     if ("speech" in payload) {
         console.log("speech:", {
             speech: payload.speech,
             emotion: payload.emotion,
             intensity: payload.intensity,
         });
-        speakTTS(payload.speech).catch((err) => {
-            console.error("TTS failed:", err.message);
-        });
+        const speechGate = actionGate.evaluateSpeech(context);
+        if (speechGate.allowed) {
+            speakTTS(payload.speech).catch((err) => {
+                console.error("TTS failed:", err.message);
+            });
+        } else {
+            recordActivity({
+                category: "control",
+                status: "error",
+                title: "Speech output denied by Kernel",
+                summary: speechGate.reason,
+                service: "action-gate",
+                payload: { turn_id: payload.turn_id },
+            });
+        }
     }
 
     if ("actions" in payload) {
         for (const action of payload.actions) {
-            try {
-                await executeAction(action);
-            } catch (err) {
-                console.error("action execution failed:", action, err.message);
-            }
+            const outcome = await executeGatedAction(action, {
+                turnId: payload.turn_id,
+                context,
+            });
+            console.log("action outcome:", outcome);
         }
     }
 
@@ -1236,6 +1244,13 @@ async function executeAuditedPayload(payload) {
                 } catch (err) {
                     console.error("vision request failed:", err.message);
                 }
+            }
+            if (typeof request === "object" && request.type === "kernel_query") {
+                await sendObservationToChatGPT({
+                    type: "request.kernel_result",
+                    source: "kernel",
+                    payload: buildKernelQueryResult(request),
+                }, { consumeProposals: false });
             }
         }
     }
@@ -1299,15 +1314,20 @@ app.post("/api/dashboard/actions", async (req, res) => {
         return res.status(400).json({ error: "Dashboard supports only led_change and tear actions" });
     }
 
-    const validationError = validateActions([action]);
+    const validationError = responseProtocol.validateActions([action]);
     if (validationError) return res.status(400).json({ error: validationError });
 
-    try {
-        await executeAction(action);
-        return res.json({ status: "OK" });
-    } catch (err) {
-        return res.status(502).json({ error: err.message });
-    }
+    const turnId = `operator_${Date.now()}`;
+    const outcome = await executeGatedAction(action, {
+        turnId,
+        context: {
+            turn_id: turnId,
+            trigger: { type: "interaction.operator_command", payload: action },
+        },
+        reportToLlm: false,
+    });
+    if (outcome.status === "succeeded") return res.json({ status: "OK", outcome });
+    return res.status(outcome.status === "denied" ? 409 : 502).json({ error: outcome.error, outcome });
 });
 
 app.post(config.routes.yoloEvent, async (req, res) => {
@@ -1396,6 +1416,58 @@ app.post(config.routes.touchSensorInput, async (req, res) => {
     }
 });
 
+app.post(config.routes.audioClassification, async (req, res) => {
+    const event = isPlainObject(req.body.event) ? req.body.event : req.body;
+    if (typeof event.label !== "string" || !event.label.trim() || event.label.length > 100) {
+        return res.status(400).json({ error: "label must be a non-empty string of at most 100 characters" });
+    }
+    if (event.level != null && !config.audio.allowedLevels.includes(event.level)) {
+        return res.status(400).json({ error: `level must be one of ${config.audio.allowedLevels.join(", ")}` });
+    }
+    if (event.confidence != null && (typeof event.confidence !== "number" || event.confidence < 0 || event.confidence > 1)) {
+        return res.status(400).json({ error: "confidence must be between 0 and 1" });
+    }
+
+    const input = {
+        ...(typeof event.event_id === "string" ? { id: event.event_id } : {}),
+        type: "audio.classification",
+        source: typeof event.source === "string" ? event.source : config.audio.source,
+        ...(event.timestamp ? { observed_at: event.timestamp } : {}),
+        confidence: event.confidence ?? 1,
+        payload: { label: event.label.trim(), level: event.level ?? null },
+    };
+    try {
+        if (config.audio.forwardToLlm) await sendObservationToChatGPT(input);
+        else await ingestObservation(input);
+        return res.json({ status: "OK", forwarded_to_llm: config.audio.forwardToLlm });
+    } catch (error) {
+        return res.status(503).json({ error: error.message });
+    }
+});
+
+app.post(config.routes.internalState, async (req, res) => {
+    const signals = req.body.signals;
+    if (!isPlainObject(signals) || Object.keys(signals).length === 0 || Object.keys(signals).length > 32) {
+        return res.status(400).json({ error: "signals must be an object containing 1 to 32 values" });
+    }
+    for (const [name, value] of Object.entries(signals)) {
+        if (!/^[a-z][a-z0-9_]{0,63}$/u.test(name) || typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > 1) {
+            return res.status(400).json({ error: "signal names must be lowercase identifiers and values must be between 0 and 1" });
+        }
+    }
+    try {
+        await ingestObservation({
+            type: "internal.homeostasis_sample",
+            source: typeof req.body.source === "string" ? req.body.source : "body_controller",
+            ...(req.body.timestamp ? { observed_at: req.body.timestamp } : {}),
+            payload: { signals },
+        });
+        return res.json({ status: "OK", drives: behaviorArchitecture.snapshot().drives });
+    } catch (error) {
+        return res.status(400).json({ error: error.message });
+    }
+});
+
 app.get(config.routes.behaviorState, (req, res) => {
     res.set("Cache-Control", "no-store");
     res.json(behaviorArchitecture.snapshot());
@@ -1409,14 +1481,14 @@ async function runSpontaneousBehaviorTick() {
         type: "system.spontaneous_tick",
         source: "kernel",
         payload: { reason: "pending_behavior_proposal" },
-    });
+    }, { minimumProposalPriority: config.behavior.spontaneous.minimum_priority });
 }
 
 app.post(config.routes.behaviorTick, async (req, res) => {
     try {
         const context = await runSpontaneousBehaviorTick();
         if (!context) return res.status(204).send();
-        return res.json({ status: "sent", proposal_count: context.behavior.proposals.length });
+        return res.json({ status: "sent", proposal_count: context.behavior_proposals?.length ?? 0 });
     } catch (err) {
         return res.status(503).json({ error: err.message });
     }
@@ -1440,6 +1512,25 @@ app.post(`${config.routes.memoryProposals}/:id/decision`, async (req, res) => {
     }
 });
 
+app.get(config.routes.socialProposals, async (req, res) => {
+    await socialReady;
+    const status = typeof req.query.status === "string" ? req.query.status : undefined;
+    const kind = typeof req.query.kind === "string" ? req.query.kind : undefined;
+    res.set("Cache-Control", "no-store");
+    res.json({ records: socialStore.list({ status, kind }) });
+});
+
+app.post(`${config.routes.socialProposals}/:id/decision`, async (req, res) => {
+    await socialReady;
+    try {
+        const record = await socialStore.decide(req.params.id, req.body.decision);
+        if (!record) return res.status(404).json({ error: "social proposal not found" });
+        return res.json(record);
+    } catch (error) {
+        return res.status(400).json({ error: error.message });
+    }
+});
+
 app.listen(config.server.port, () => {
     console.log(`YOLO event server listening on :${config.server.port}`);
     recordActivity({
@@ -1451,7 +1542,7 @@ app.listen(config.server.port, () => {
     });
 });
 
-if (config.behavior.spontaneous.enabled) {
+if (config.behavior.spontaneous.enabled && config.behavior.spontaneous.armed) {
     let spontaneousTickRunning = false;
     const timer = setInterval(async () => {
         if (spontaneousTickRunning || !page) return;
@@ -1465,6 +1556,8 @@ if (config.behavior.spontaneous.enabled) {
         }
     }, config.behavior.spontaneous.interval_ms);
     timer.unref();
+} else if (config.behavior.spontaneous.enabled) {
+    console.warn("spontaneous behavior is enabled but not armed; automatic ticks will not run");
 }
 
 /* ---------------------------
@@ -1473,8 +1566,8 @@ if (config.behavior.spontaneous.enabled) {
 app.post(config.routes.userInput, async (req, res) => {
     const text = req.body.text;
 
-    if (typeof text !== "string" || text.trim() === "") {
-        return res.status(400).json({ error: "text must be a non-empty string" });
+    if (typeof text !== "string" || text.trim() === "" || text.length > 2000) {
+        return res.status(400).json({ error: "text must be a non-empty string of at most 2000 characters" });
     }
 
     try {
@@ -1593,7 +1686,23 @@ async function runLLaVA(prompt) {
                 continue;
             }
 
-            const audit = auditLLMJson(payload);
+            const turnContext = typeof payload.turn_id === "string"
+                ? turnRegistry.get(payload.turn_id)
+                : null;
+            if (!turnContext) {
+                recordActivity({
+                    category: "audit",
+                    status: "error",
+                    title: "Uncorrelated ChatGPT response",
+                    summary: "turn_id did not match a pending cognitive context",
+                    direction: "inbound",
+                    service: "chatgpt",
+                    payload,
+                });
+                continue;
+            }
+
+            const audit = responseProtocol.audit(payload);
             if (!audit.ok) {
                 console.log("rejected JSON:", audit.reason, payload);
                 recordActivity({
@@ -1608,6 +1717,21 @@ async function runLLaVA(prompt) {
                 continue;
             }
 
+            const evidenceError = validateProposalEvidence(audit.payload);
+            if (evidenceError) {
+                recordActivity({
+                    category: "audit",
+                    status: "error",
+                    title: "Ungrounded proposal rejected",
+                    summary: evidenceError,
+                    direction: "inbound",
+                    service: "chatgpt",
+                    payload,
+                });
+                continue;
+            }
+
+            turnRegistry.consume(payload.turn_id);
             console.log("accepted JSON:", audit.payload);
             recordActivity({
                 category: "communication",
@@ -1618,7 +1742,7 @@ async function runLLaVA(prompt) {
                 service: "chatgpt",
                 payload: audit.payload,
             });
-            await executeAuditedPayload(audit.payload);
+            await executeAuditedPayload(audit.payload, { context: turnContext });
         }
     });
 

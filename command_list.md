@@ -10,7 +10,8 @@ Kernelからの入力は，以下の`cognitive_context`に統一する．従来�
 ```json
 {
   "type": "cognitive_context",
-  "protocol_version": "1.1",
+  "protocol_version": "1.2",
+  "turn_id": "obs_123",
   "trigger": {
     "id": "obs_123",
     "type": "interaction.user_input",
@@ -46,11 +47,13 @@ Kernelからの入力は，以下の`cognitive_context`に統一する．従来�
 世界モデルの圧縮表現である．文字列`unknown`と`stale`を現在の事実として
 扱ってはならない．`memory`と`behavior_proposals`は中身がある場合だけ追加される．
 `behavior_proposals`は候補であって命令ではない．
+LLM出力は必ず入力と同一の`turn_id`を含める．
 
 ## LLMからKernelへの出力
 
 @MTFF0000;@
 {
+  "turn_id": "obs_123",
   "actions": [
     {
       "type": "tear",
@@ -66,6 +69,7 @@ speed，durationは0~255．
 
 @LT00FF00;@
 {
+  "turn_id": "obs_123",
   "actions": [
     {
       "type": "led_change",
@@ -78,8 +82,9 @@ speed，durationは0~255．
 colorはHEXカラーコード．
 これ以外の変数が入っている場合，変数が1つでも足りない場合，カラーコードでない場合は不正扱い．
 
-（参考：2つのアクションを組み合わせる場合は以下のように書く）
+一つのturnで複数のアクションは許可されない．以下はKernelに拒否される例．
 {
+  "turn_id": "obs_123",
   "actions": [
     {
       "type": "tear",
@@ -99,6 +104,7 @@ colorはHEXカラーコード．
 
 登録人物照合用の顔記憶
 {
+  "turn_id": "obs_123",
   "actions": [
     {
       "type": "remember_person",
@@ -114,6 +120,7 @@ track_idは直近のDeepSORTイベントから取得する．本人が名前を�
 
 @THP@
 {
+    "turn_id": "obs_123",
     "requests": [
         "temperature",
         "humidity",
@@ -124,6 +131,7 @@ track_idは直近のDeepSORTイベントから取得する．本人が名前を�
 
 @vision:describe the scene@
 {
+  "turn_id": "obs_123",
   "requests": [
     {
       "type": "vision",
@@ -137,6 +145,7 @@ Taskはとりあえずdescribe_sceneのみ．これ以外の変数が入って�
 
 会話文
 {
+  "turn_id": "obs_123",
   "speech": "string",
   "emotion": "enum",
   "intensity": 0.0

@@ -1,13 +1,14 @@
 export class ContextComposer {
-    constructor({ persona = {}, protocolVersion = "1.1" } = {}) {
+    constructor({ persona = {}, protocolVersion = "1.2" } = {}) {
         this.persona = persona;
         this.protocolVersion = protocolVersion;
     }
 
-    compose({ trigger, state, world, behaviorProposals = [], memories = [] }) {
+    compose({ trigger, state, world, behaviorProposals = [], memories = [], social = {}, drives = {}, actionGate = {} }) {
         const context = {
             type: "cognitive_context",
             protocol_version: this.protocolVersion,
+            turn_id: trigger.id,
             trigger: compactTrigger(trigger),
             persona: {
                 id: this.persona.id ?? "kokomi-origin",
@@ -18,11 +19,46 @@ export class ContextComposer {
         };
 
         if (memories.length > 0) context.memory = memories.map(compactMemory);
+        const compactSocialState = compactSocial(social);
+        if (Object.keys(compactSocialState).length > 0) context.social = compactSocialState;
+        const compactDriveState = compactDrives(drives);
+        if (Object.keys(compactDriveState).length > 0) context.drives = compactDriveState;
+        if (trigger.type !== "action.outcome" && actionGate?.recent_outcomes?.length > 0) {
+            context.last_action_outcome = compactOutcome(actionGate.recent_outcomes[0]);
+        }
         if (behaviorProposals.length > 0) {
             context.behavior_proposals = behaviorProposals.map(compactProposal);
         }
         return context;
     }
+}
+
+function compactSocial(social) {
+    const result = {};
+    if (social.visible_people?.length > 0) result.visible_people = social.visible_people;
+    if (social.relationships?.length > 0) result.relationships = social.relationships;
+    if (social.boundaries?.length > 0) result.boundaries = social.boundaries;
+    if (social.open_commitments?.length > 0) result.open_commitments = social.open_commitments;
+    return result;
+}
+
+function compactDrives(drives) {
+    if (!drives?.needs) return {};
+    const result = { needs: drives.needs };
+    if (Object.keys(drives.external ?? {}).length > 0) result.body_signals = drives.external;
+    if (drives.dominant?.length > 0) result.dominant = drives.dominant;
+    return result;
+}
+
+function compactOutcome(outcome) {
+    return {
+        intention_id: outcome.intention_id,
+        action_type: outcome.action_type,
+        expected_effect: outcome.expected_effect,
+        status: outcome.status,
+        prediction_match: outcome.prediction_match,
+        ...(outcome.error ? { error: outcome.error } : {}),
+    };
 }
 
 function round(value, decimals = 1) {
@@ -119,6 +155,7 @@ function compactMemory(memory) {
         confidence: round(memory.confidence, 2),
         relevance: round(memory.relevance, 2),
         evidence_event_ids: memory.evidence_event_ids,
+        ...(memory.retrieval_method ? { retrieval_method: memory.retrieval_method } : {}),
     };
 }
 

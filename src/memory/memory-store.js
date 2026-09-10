@@ -18,6 +18,39 @@ function tokenize(text) {
     return new Set(tokens);
 }
 
+function hashToken(token) {
+    let hash = 2166136261;
+    for (const character of token) {
+        hash ^= character.codePointAt(0);
+        hash = Math.imul(hash, 16777619);
+    }
+    return hash >>> 0;
+}
+
+function featureVector(text, dimensions = 256) {
+    const vector = new Float64Array(dimensions);
+    for (const token of tokenize(text)) {
+        const hash = hashToken(token);
+        const index = hash % dimensions;
+        vector[index] += (hash & 0x100) === 0 ? 1 : -1;
+    }
+    let norm = 0;
+    for (const value of vector) norm += value * value;
+    norm = Math.sqrt(norm);
+    if (norm > 0) for (let index = 0; index < vector.length; index += 1) vector[index] /= norm;
+    return vector;
+}
+
+function cosine(left, right) {
+    let score = 0;
+    for (let index = 0; index < left.length; index += 1) score += left[index] * right[index];
+    return Math.max(0, Math.min(1, score));
+}
+
+function contentSimilarity(left, right) {
+    return cosine(featureVector(left), featureVector(right));
+}
+
 function validateProposal(proposal) {
     if (proposal === null || typeof proposal !== "object" || Array.isArray(proposal)) {
         return "memory proposal must be an object";
@@ -101,8 +134,13 @@ export class MemoryStore {
         }
         const record = this.records.find((candidate) => candidate.id === id);
         if (!record) return null;
+        if (record.status !== "pending") {
+            if (record.status === decision) return { ...record };
+            throw new TypeError("memory proposal has already been decided; submit a new proposal to correct it");
+        }
         record.status = decision;
         record.decided_at = new Date(this.clock()).toISOString();
+        if (decision === "accepted") record.consolidated_ids = this.#consolidate(record);
         await this.#persist();
         return { ...record };
     }
@@ -116,6 +154,7 @@ export class MemoryStore {
     retrieve(query, { limit = 5 } = {}) {
         const queryTokens = tokenize(query);
         if (queryTokens.size === 0) return [];
+        const queryVector = featureVector(query);
         return this.records
             .filter((record) => (
                 record.status === "accepted"
@@ -125,9 +164,12 @@ export class MemoryStore {
                 const recordTokens = tokenize(`${record.subject} ${record.content}`);
                 let overlap = 0;
                 for (const token of queryTokens) if (recordTokens.has(token)) overlap += 1;
-                return { record, score: overlap / Math.max(queryTokens.size, 1) };
+                const lexicalScore = overlap / Math.max(queryTokens.size, 1);
+                const vectorScore = cosine(queryVector, featureVector(`${record.subject} ${record.content}`));
+                const score = lexicalScore * 0.65 + vectorScore * 0.25 + record.confidence * 0.1;
+                return { record, score, lexicalScore, vectorScore };
             })
-            .filter(({ score }) => score > 0)
+            .filter(({ lexicalScore, vectorScore }) => lexicalScore > 0 || vectorScore >= 0.18)
             .sort((a, b) => b.score - a.score || b.record.confidence - a.record.confidence)
             .slice(0, limit)
             .map(({ record, score }) => ({
@@ -138,7 +180,26 @@ export class MemoryStore {
                 confidence: record.confidence,
                 relevance: Number(score.toFixed(3)),
                 evidence_event_ids: record.evidence_event_ids,
+                retrieval_method: "hybrid_lexical_hash_v1",
             }));
+    }
+
+    #consolidate(acceptedRecord) {
+        const consolidated = [];
+        for (const candidate of this.records) {
+            if (
+                candidate.id === acceptedRecord.id
+                || candidate.status !== "accepted"
+                || candidate.kind !== acceptedRecord.kind
+                || candidate.subject.toLocaleLowerCase("ja") !== acceptedRecord.subject.toLocaleLowerCase("ja")
+            ) continue;
+            if (contentSimilarity(candidate.content, acceptedRecord.content) < 0.92) continue;
+            candidate.status = "superseded";
+            candidate.superseded_by = acceptedRecord.id;
+            candidate.superseded_at = acceptedRecord.decided_at;
+            consolidated.push(candidate.id);
+        }
+        return consolidated;
     }
 
     async #persist() {

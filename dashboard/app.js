@@ -191,6 +191,75 @@ function renderEndpoints(snapshot) {
     }).join("");
 }
 
+function factValue(fact, labels = {}) {
+    if (!fact || fact.status !== "known") return "不明";
+    if (typeof fact.value === "boolean") return fact.value ? "はい" : "いいえ";
+    return labels[fact.value] || String(fact.value ?? "不明");
+}
+
+function meter(level) {
+    if (typeof level !== "number") return '<span class="unknown-value">データなし</span>';
+    const percent = Math.round(Math.max(0, Math.min(1, level)) * 100);
+    return `<span class="drive-meter"><i style="width:${percent}%"></i></span><strong>${percent}%</strong>`;
+}
+
+function renderCognition(snapshot) {
+    const behavior = snapshot.behavior || {};
+    const world = behavior.world || {};
+    const drives = behavior.drives || {};
+    const needs = drives.needs || {};
+    const social = snapshot.social || {};
+    const gate = snapshot.actionGate || {};
+    const turns = snapshot.cognitiveTurns || {};
+    const persistence = snapshot.persistence || {};
+    const outcomes = gate.recent_outcomes || [];
+    const latestOutcome = outcomes[0];
+    const pendingIntentions = gate.pending_intentions || [];
+    const visiblePeople = social.visible_people || [];
+    const stateRevision = behavior.state?.revision;
+
+    $("#cognition-revision").textContent = Number.isFinite(stateRevision) ? `revision ${stateRevision}` : "revision --";
+    $("#cognition-grid").innerHTML = `
+        <article class="panel cognition-card">
+            <div class="panel-head"><div><p class="eyebrow">WORLD MODEL</p><h2>世界モデル</h2></div></div>
+            <dl class="fact-list">
+                <div><dt>在室</dt><dd>${escapeHtml(factValue(world.room?.is_occupied))}</dd></div>
+                <div><dt>温熱環境</dt><dd>${escapeHtml(factValue(world.environment?.thermal_condition, { comfortable: "快適", warm: "暖かい", hot: "暑い", cold: "寒い" }))}</dd></div>
+                <div><dt>照明環境</dt><dd>${escapeHtml(factValue(world.environment?.lighting_condition, { dark: "暗い", normal: "標準", bright: "明るい" }))}</dd></div>
+                <div><dt>会話音声</dt><dd>${escapeHtml(factValue(world.activity?.someone_is_talking))}</dd></div>
+            </dl>
+        </article>
+        <article class="panel cognition-card">
+            <div class="panel-head"><div><p class="eyebrow">FUNCTIONAL NEEDS</p><h2>欲求・恒常性</h2></div></div>
+            <div class="drive-list">
+                <div><span>温熱快適性</span>${meter(needs.thermal_comfort)}</div>
+                <div><span>社会的接触</span>${meter(needs.social_contact)}</div>
+                <div><span>感覚休息</span>${meter(needs.sensory_rest)}</div>
+            </div>
+            <p class="card-note">外部の生理信号 ${Object.keys(drives.external || {}).length}件 · 高優先欲求 ${(drives.dominant || []).length}件</p>
+        </article>
+        <article class="panel cognition-card">
+            <div class="panel-head"><div><p class="eyebrow">SOCIAL STATE</p><h2>社会状態</h2></div></div>
+            <dl class="fact-list">
+                <div><dt>現在見えている人</dt><dd>${visiblePeople.length}人</dd></div>
+                <div><dt>関係</dt><dd>${(social.relationships || []).length}件</dd></div>
+                <div><dt>境界</dt><dd>${(social.boundaries || []).length}件</dd></div>
+                <div><dt>未完了の約束</dt><dd>${(social.open_commitments || []).length}件</dd></div>
+                <div><dt>承認待ち提案</dt><dd>${social.pendingProposalCount || 0}件</dd></div>
+            </dl>
+        </article>
+        <article class="panel cognition-card">
+            <div class="panel-head"><div><p class="eyebrow">ACTION LOOP</p><h2>行動ゲート</h2></div><span class="status-pill ${gate.enabled === false ? "disabled" : "online"}">${gate.enabled === false ? "無効" : "有効"}</span></div>
+            <dl class="fact-list">
+                <div><dt>実行待ち意図</dt><dd>${pendingIntentions.length}件</dd></div>
+                <div><dt>直近の結果</dt><dd>${escapeHtml(latestOutcome ? `${latestOutcome.action_type}: ${latestOutcome.status}` : "未実行")}</dd></div>
+                <div><dt>照合待ちターン</dt><dd>${turns.count || 0}件</dd></div>
+                <div><dt>復元イベント</dt><dd>${persistence.loaded || 0}件</dd></div>
+                <div><dt>間引き済み観測</dt><dd>${persistence.skippedCheckpoints || 0}件</dd></div>
+            </dl>
+        </article>`;
+}
+
 function render(snapshot) {
     state.snapshot = snapshot;
     renderHero(snapshot);
@@ -198,6 +267,7 @@ function render(snapshot) {
     renderServices(snapshot);
     renderActivity(snapshot);
     renderEndpoints(snapshot);
+    renderCognition(snapshot);
 }
 
 async function fetchSnapshot({ quiet = false } = {}) {

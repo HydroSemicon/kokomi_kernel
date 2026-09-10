@@ -50,6 +50,8 @@ export class StateStore {
         this.hasTouchEvidence = false;
         this.lastTouch = null;
         this.lastUserInput = null;
+        this.lastActionOutcome = null;
+        this.lastActionIntention = null;
     }
 
     apply(observation) {
@@ -76,6 +78,20 @@ export class StateStore {
         case "interaction.user_input":
             this.lastUserInput = makeFact({
                 value: observation.payload.text,
+                observation,
+                staleAfterMs: null,
+            });
+            break;
+        case "action.outcome":
+            this.lastActionOutcome = makeFact({
+                value: observation.payload,
+                observation,
+                staleAfterMs: null,
+            });
+            break;
+        case "action.intention":
+            this.lastActionIntention = makeFact({
+                value: observation.payload,
                 observation,
                 staleAfterMs: null,
             });
@@ -210,6 +226,10 @@ export class StateStore {
                 being_petted: pettingState,
                 last_touch: publicFact(this.lastTouch, nowMs),
                 last_user_input: publicFact(this.lastUserInput, nowMs),
+            },
+            action: {
+                last_intention: publicFact(this.lastActionIntention, nowMs),
+                last_outcome: publicFact(this.lastActionOutcome, nowMs),
             },
             provenance: {
                 last_observation_id: this.lastObservation?.id ?? null,

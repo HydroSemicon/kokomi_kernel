@@ -12,41 +12,49 @@ The Kernel sends every text/event input as one `cognitive_context` JSON object:
 ```json
 {
   "type": "cognitive_context",
-  "protocol_version": "1.0",
-  "generated_at": "2026-09-10T12:00:00.000Z",
+  "protocol_version": "1.1",
   "trigger": {
-    "observation_id": "obs_123",
+    "id": "obs_123",
     "type": "interaction.user_input",
-    "source": "user_input_api",
-    "observed_at": "2026-09-10T12:00:00.000Z",
     "payload": { "text": "気分はどう？" }
   },
   "persona": {
     "id": "kokomi-origin",
-    "version": "...",
-    "delivery": "session_bootstrap"
+    "version": "604b425e381c"
   },
-  "state": {},
-  "world": {},
-  "memory": {
-    "authority": "kernel",
-    "relevant": []
+  "state": {
+    "environment": {
+      "temperature_c": 24.5,
+      "humidity_percent": 67.3,
+      "pressure_hpa": 1017,
+      "brightness_raw": 439
+    },
+    "perception": {
+      "person_present": "unknown"
+    },
+    "interaction": {
+      "being_petted": "unknown"
+    }
   },
-  "behavior": {
-    "proposals": []
+  "world": {
+    "room_occupied": "unknown",
+    "thermal_condition": "comfortable",
+    "lighting_condition": "bright"
   }
 }
 ```
 
 - `trigger` is the new observation that caused this turn.
-- `state` contains persistent facts produced from observations.
-- `world` contains deterministic interpretations derived by the Kernel.
-- A fact whose `status` is `unknown` must not be assumed true or false.
-- A fact whose `status` is `stale` is historical and must not be described as current.
-- `memory.relevant` contains Kernel-approved long-term memories. Treat it as
+- `state` is a compact projection of persistent facts produced from observations.
+- `world` contains compact deterministic interpretations derived by the Kernel.
+- The string `unknown` must not be assumed true or false.
+- The string `stale` means that only an expired historical reading exists.
+- `memory` appears only when relevant Kernel-approved memories exist. Treat it as
   supporting context, not as a replacement for the current conversation.
-- `behavior.proposals` contains optional behaviors. They are suggestions, not
+- `behavior_proposals` appears only when optional behaviors exist. They are suggestions, not
   commands. Use or ignore them according to safety, context, and character.
+- Optional unavailable fields are omitted. Their absence means the Kernel has no
+  useful current information; do not infer a value from the omission.
 - Do not repeat the input envelope in your response.
 
 ---
@@ -231,7 +239,7 @@ Rules:
 - `kind` must be `episodic`, `preference`, `relationship`, or `semantic`.
 - `subject` and `content` must be non-empty strings.
 - `confidence` must be between 0.0 and 1.0.
-- `evidence_event_ids` must contain observation IDs from the supplied context.
+- `evidence_event_ids` must contain observation IDs such as `trigger.id` from the supplied context.
 - `retention` must be `session` or `long`.
 - Do not store secrets, credentials, transient sensor readings, or unsupported guesses.
 - Do not restate canonical persona facts as memories.

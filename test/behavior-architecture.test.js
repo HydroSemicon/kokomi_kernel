@@ -99,6 +99,22 @@ test("behavior proposals are bounded by priority, expiry, and cooldown", () => {
 
 test("cognitive context keeps trigger, persona, state, world, memory, and proposals separate", () => {
     const { architecture } = testArchitecture();
+    architecture.observe({
+        id: "sensor_detail_that_must_stay_inside_kernel",
+        type: "sensor.environment_sample",
+        source: "bme280",
+        payload: {
+            temperature: 24.51695194063359,
+            humidity: 67.25578837697772,
+            pressure: 1016.9634879322562,
+            units: { temperature: "celsius", humidity: "percent", pressure: "hpa" },
+        },
+    });
+    architecture.observe({
+        type: "sensor.brightness_sample",
+        source: "cds",
+        payload: { brightness: 439, unit: "raw" },
+    });
     const { observation } = architecture.observe({
         type: "interaction.user_input",
         source: "user_input_api",
@@ -109,10 +125,51 @@ test("cognitive context keeps trigger, persona, state, world, memory, and propos
     });
 
     assert.equal(context.type, "cognitive_context");
+    assert.equal(context.protocol_version, "1.1");
     assert.equal(context.trigger.payload.text, "今日は寒いね");
     assert.equal(context.persona.version, "test-version");
-    assert.equal(context.memory.authority, "kernel");
-    assert.equal(context.memory.relevant[0].id, "memory_1");
-    assert.equal(context.state.revision, 1);
-    assert.equal(context.world.derived_from_state_revision, 1);
+    assert.equal(context.memory[0].id, "memory_1");
+    assert.equal(context.state.environment.temperature_c, 24.5);
+    assert.equal(context.state.environment.humidity_percent, 67.3);
+    assert.equal(context.world.thermal_condition, "comfortable");
+    assert.equal(context.world.lighting_condition, "bright");
+    assert.equal(context.state.perception.person_present, "unknown");
+    assert.equal("behavior_proposals" in context, false);
+
+    const json = JSON.stringify(context);
+    assert.equal(json.includes("sensor_detail_that_must_stay_inside_kernel"), false);
+    assert.equal(json.includes("observation_id"), false);
+    assert.equal(json.includes("based_on"), false);
+    assert.equal(json.includes("generated_at"), false);
+    assert.ok(json.length < 1_200, `projected context was unexpectedly large: ${json.length}`);
+});
+
+test("projection keeps memory evidence and behavior safety fields when they are present", () => {
+    const { architecture } = testArchitecture();
+    const { observation } = architecture.observe({
+        id: "touch_observation",
+        type: "touch.petting_started",
+        source: "touch",
+        payload: { body_part: "head" },
+    });
+    const context = architecture.composeContext(observation, {
+        memories: [{
+            id: "memory_1",
+            kind: "preference",
+            subject: "user",
+            content: "ユーザーは静かな部屋を好む",
+            confidence: 0.94,
+            relevance: 0.812,
+            evidence_event_ids: ["older_observation"],
+        }],
+    });
+
+    assert.equal(context.memory[0].confidence, 0.94);
+    assert.equal(context.memory[0].relevance, 0.81);
+    assert.deepEqual(context.memory[0].evidence_event_ids, ["older_observation"]);
+    assert.equal(context.behavior_proposals[0].kind, "social.respond_to_touch");
+    assert.equal(context.behavior_proposals[0].priority, 85);
+    assert.equal(context.behavior_proposals[0].reason, "petting_started");
+    assert.equal("execution" in context.behavior_proposals[0], false);
+    assert.equal("cooldown_key" in context.behavior_proposals[0], false);
 });

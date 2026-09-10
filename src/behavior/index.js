@@ -15,7 +15,7 @@ export class BehaviorArchitecture {
             cooldowns: config.cooldowns,
             proposalTtlMs: config.proposal_ttl_ms,
         });
-        this.contextComposer = new ContextComposer({ persona: config.persona, clock });
+        this.contextComposer = new ContextComposer({ persona: config.persona });
         this.isoClock = isoClock;
         this.pendingProposals = [];
     }

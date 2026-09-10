@@ -55,8 +55,30 @@ command. ChatGPT reviews it, then any returned action still passes through the
 existing Kernel audit. Automatic proposal dispatch is disabled by default.
 
 `ContextComposer` creates the JSON-only `cognitive_context` passed to ChatGPT.
-It keeps trigger, persona metadata, state, world model, approved memories, and
-behavior proposals in separate fields.
+It first projects the complete internal state into a compact LLM view. Trigger,
+persona metadata, state, world model, approved memories, and behavior proposals
+remain separate, but audit-only metadata is not repeated in the conversation.
+
+## Internal state and cognitive projection
+
+The complete state returned by `GET /api/behavior/state` retains schema and
+revision numbers, timestamps, source names, confidence, observation IDs,
+freshness, provenance, and derivation evidence. This is the inspectable Kernel
+record and is never reduced.
+
+Protocol 1.1 sends a different representation to ChatGPT:
+
+- current numeric readings are rounded to a conversationally useful precision
+- units move into stable field names such as `temperature_c`
+- `unknown` and `stale` remain explicit values rather than becoming `false`
+- repeated timestamps, source names, confidence 1.0, and derivation paths stay internal
+- empty memory and behavior arrays are omitted
+- memories retain their IDs, confidence, relevance, and evidence references
+- behavior proposals retain priority, reason, expiry, and supporting context
+
+The projection intentionally sends a small current snapshot on every turn
+instead of relying on deltas alone. ChatGPT can therefore recover after context
+compaction or a missed message without receiving the full audit record.
 
 ## Persona and conversation context
 
@@ -95,7 +117,7 @@ To enable periodic spontaneous ticks after bench testing, set
 interval, cooldowns, freshness windows, and world-model thresholds are all
 configurable in the same section.
 
-## Deliberate first-stage limits
+## Current limits
 
 - The memory retriever is a deterministic local lexical retriever, not an
   embedding service. Its interface can later be backed by a vector index.

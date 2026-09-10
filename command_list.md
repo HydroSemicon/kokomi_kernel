@@ -10,30 +10,42 @@ Kernelからの入力は，以下の`cognitive_context`に統一する．従来�
 ```json
 {
   "type": "cognitive_context",
-  "protocol_version": "1.0",
-  "generated_at": "2026-09-10T12:00:00.000Z",
+  "protocol_version": "1.1",
   "trigger": {
-    "observation_id": "obs_123",
+    "id": "obs_123",
     "type": "interaction.user_input",
-    "source": "user_input_api",
-    "observed_at": "2026-09-10T12:00:00.000Z",
     "payload": { "text": "気分はどう？" }
   },
   "persona": {
     "id": "kokomi-origin",
-    "version": "604b425e381c5a3c6a523c4715078fbb8ba72bec",
-    "delivery": "session_bootstrap"
+    "version": "604b425e381c"
   },
-  "state": {},
-  "world": {},
-  "memory": { "authority": "kernel", "relevant": [] },
-  "behavior": { "proposals": [] }
+  "state": {
+    "environment": {
+      "temperature_c": 24.5,
+      "humidity_percent": 67.3,
+      "pressure_hpa": 1017,
+      "brightness_raw": 439
+    },
+    "perception": {
+      "person_present": "unknown"
+    },
+    "interaction": {
+      "being_petted": "unknown"
+    }
+  },
+  "world": {
+    "room_occupied": "unknown",
+    "thermal_condition": "comfortable",
+    "lighting_condition": "bright"
+  }
 }
 ```
 
-`state`は継続状態，`world`はKernelが決定論的に導出した世界モデルである．
-`status: unknown`と`status: stale`を現在の事実として扱ってはならない．
-`behavior.proposals`は候補であって命令ではない．
+`state`は継続状態のLLM向け圧縮表現，`world`はKernelが決定論的に導出した
+世界モデルの圧縮表現である．文字列`unknown`と`stale`を現在の事実として
+扱ってはならない．`memory`と`behavior_proposals`は中身がある場合だけ追加される．
+`behavior_proposals`は候補であって命令ではない．
 
 ## LLMからKernelへの出力
 

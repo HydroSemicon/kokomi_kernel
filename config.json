@@ -166,7 +166,9 @@
         "minSpeechDurationMs": 250,
         "partialTtlMs": 2000,
         "maxTextLength": 2000,
-        "tokenRouteLoopbackOnly": true
+        "tokenRouteLoopbackOnly": true,
+        "captureAckTimeoutMs": 650,
+        "resumeGuardMs": 400
     },
 
     "tts": {
@@ -203,6 +205,35 @@
         ]
     },
 
+    "filler": {
+        "enabled": true,
+        "armed": true,
+        "manifestPath": "data/runtime/fillers/manifest.json",
+        "experimentSeed": "kokomi-fillers-ja-v1",
+        "maxClipDurationMs": 1800,
+        "globalCooldownMs": 4000,
+        "thinking": {
+            "enabled": true,
+            "delayMs": 1000,
+            "maxPerTurn": 1
+        },
+        "listening": {
+            "enabled": true,
+            "armed": false,
+            "minimumSpeechMs": 1800,
+            "minimumPartialCharacters": 8,
+            "cooldownMs": 6000,
+            "maxPerSegment": 1
+        },
+        "playerCommand": "ffplay",
+        "playerArgs": [
+            "-nodisp",
+            "-autoexit",
+            "-loglevel",
+            "quiet"
+        ]
+    },
+
     "vision": {
         "snapshotUrl": "http://localhost:5000/snapshot",
         "snapshotTimeoutMs": 10000,
@@ -235,7 +266,9 @@
         "memoryProposals": "/api/memory/proposals",
         "socialProposals": "/api/social/proposals",
         "asrToken": "/api/asr/token",
-        "asrTranscript": "/asr/transcript"
+        "asrTranscript": "/asr/transcript",
+        "asrControl": "/api/asr/control",
+        "asrControlAck": "/api/asr/control/ack"
     },
 
     "server": {

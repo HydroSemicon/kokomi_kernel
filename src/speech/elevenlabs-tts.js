@@ -95,7 +95,7 @@ export class ElevenLabsTtsProvider {
         return buildElevenLabsTtsRequest(input, this.config);
     }
 
-    async speak({ body, onPlaybackStarted }) {
+    async speak({ body, onBeforePlayback = async () => {}, onPlaybackStarted }) {
         const url = `${this.config.baseUrl}/${this.config.defaultVoiceId}/stream?output_format=${this.config.defaultOutputFormat}`;
         let response;
         try {
@@ -113,6 +113,7 @@ export class ElevenLabsTtsProvider {
         if (!response.ok || !response.body) {
             throw safeError(`TTS provider returned HTTP ${response.status}`);
         }
+        await onBeforePlayback();
         await this.#play(response.body, onPlaybackStarted);
     }
 

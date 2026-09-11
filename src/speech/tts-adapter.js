@@ -5,7 +5,7 @@ function isPlainObject(value) {
 }
 
 export class TtsAdapter {
-    constructor({ enabled, provider, validEmotions, intensityMin = 0, intensityMax = 1, onObservation, echoGuard, clock = () => new Date().toISOString() }) {
+    constructor({ enabled, provider, validEmotions, intensityMin = 0, intensityMax = 1, onObservation, echoGuard, outputLifecycle = null, clock = () => new Date().toISOString() }) {
         this.enabled = enabled;
         this.provider = provider;
         this.validEmotions = new Set(validEmotions);
@@ -13,6 +13,7 @@ export class TtsAdapter {
         this.intensityMax = intensityMax;
         this.onObservation = onObservation;
         this.echoGuard = echoGuard;
+        this.outputLifecycle = outputLifecycle;
         this.clock = clock;
         this.queue = Promise.resolve();
     }
@@ -75,9 +76,17 @@ export class TtsAdapter {
         }
 
         let startedAt = null;
+        let outputContext = null;
         try {
             await this.provider.speak({
                 body: prepared.body,
+                onBeforePlayback: async () => {
+                    outputContext = await this.outputLifecycle?.begin({
+                        kind: "main_tts",
+                        outputId: request.turnId,
+                        pauseCapture: true,
+                    });
+                },
                 onPlaybackStarted: async () => {
                     if (startedAt) return;
                     startedAt = this.clock();
@@ -113,6 +122,8 @@ export class TtsAdapter {
             };
             await this.#emit("speech.output_failed", outcome);
             return outcome;
+        } finally {
+            if (outputContext) this.outputLifecycle?.end(outputContext);
         }
     }
 }

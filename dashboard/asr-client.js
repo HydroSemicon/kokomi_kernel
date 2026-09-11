@@ -50,6 +50,9 @@ export class AliceAsrClient {
         this.onDeliveryError = onDeliveryError;
         this.connection = null;
         this.active = false;
+        this.desiredActive = false;
+        this.capturePaused = false;
+        this.pauseReason = null;
         this.runId = 0;
         this.sessionId = null;
         this.segmentNumber = 0;
@@ -59,6 +62,10 @@ export class AliceAsrClient {
 
     get isActive() {
         return this.active;
+    }
+
+    get isStarted() {
+        return this.desiredActive;
     }
 
     #status(state, message) {
@@ -106,7 +113,12 @@ export class AliceAsrClient {
     }
 
     async start() {
-        if (this.active) return;
+        this.desiredActive = true;
+        return this.#connect();
+    }
+
+    async #connect() {
+        if (this.active || this.capturePaused || !this.desiredActive) return;
         const runId = ++this.runId;
         this.active = true;
         this.#status("connecting", "マイクへ接続中");
@@ -115,7 +127,7 @@ export class AliceAsrClient {
                 this.sdkLoader(),
                 this.fetchImpl(this.tokenUrl, { method: "POST" }).then(readJsonResponse),
             ]);
-            if (!this.active || runId !== this.runId) return;
+            if (!this.active || this.capturePaused || !this.desiredActive || runId !== this.runId) return;
 
             const configured = this.getConfig?.() ?? this.config;
             const clientConfig = tokenResponse.client_config ?? {};
@@ -153,10 +165,12 @@ export class AliceAsrClient {
                 if (this.connection !== connection) return;
                 this.connection = null;
                 this.active = false;
-                this.#status("idle", "音声入力は停止しています");
+                this.#status(this.capturePaused ? "paused" : "idle", this.capturePaused
+                    ? "心海の発話中 — マイクを一時停止しています"
+                    : "音声入力は停止しています");
             });
             connection.on(sdk.RealtimeEvents.PARTIAL_TRANSCRIPT, (data) => {
-                if (this.connection !== connection) return;
+                if (this.connection !== connection || this.capturePaused) return;
                 this.revision += 1;
                 const text = data.text ?? "";
                 this.onPartial(text);
@@ -166,7 +180,7 @@ export class AliceAsrClient {
                 });
             });
             connection.on(sdk.RealtimeEvents.COMMITTED_TRANSCRIPT, (data) => {
-                if (this.connection !== connection) return;
+                if (this.connection !== connection || this.capturePaused) return;
                 const text = data.text ?? "";
                 const event = this.#transcriptEvent("committed", text, data.language_code);
                 this.onCommitted(text);
@@ -185,11 +199,33 @@ export class AliceAsrClient {
     }
 
     stop() {
+        this.desiredActive = false;
         this.runId += 1;
         this.active = false;
         const connection = this.connection;
         this.connection = null;
         connection?.close();
         this.#status("idle", "音声入力は停止しています");
+    }
+
+    async setCapturePaused(paused, reason = null) {
+        if (typeof paused !== "boolean") throw new TypeError("paused must be boolean");
+        this.pauseReason = reason;
+        if (paused) {
+            this.capturePaused = true;
+            this.runId += 1;
+            this.active = false;
+            const connection = this.connection;
+            this.connection = null;
+            connection?.close();
+            this.#status("paused", "心海の発話中 — マイクを一時停止しています");
+            return;
+        }
+        this.capturePaused = false;
+        if (!this.desiredActive) {
+            this.#status("idle", "音声入力は停止しています");
+            return;
+        }
+        await this.#connect();
     }
 }

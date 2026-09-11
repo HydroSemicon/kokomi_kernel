@@ -190,6 +190,7 @@ test("ElevenLabs provider uses injected network/process I/O and sanitizes failur
     };
     let requestOptions;
     let starts = 0;
+    const playbackOrder = [];
     const successful = new ElevenLabsTtsProvider({
         config: providerConfig,
         apiKey: "test-key",
@@ -201,8 +202,13 @@ test("ElevenLabs provider uses injected network/process I/O and sanitizes failur
         spawnImpl: () => fakePlayer(0),
     });
     const prepared = successful.buildRequest(speechRequest);
-    await successful.speak({ body: prepared.body, onPlaybackStarted: async () => { starts += 1; } });
+    await successful.speak({
+        body: prepared.body,
+        onBeforePlayback: async () => { playbackOrder.push("capture_paused"); },
+        onPlaybackStarted: async () => { starts += 1; playbackOrder.push("playback_started"); },
+    });
     assert.equal(starts, 1);
+    assert.deepEqual(playbackOrder, ["capture_paused", "playback_started"]);
     assert.equal(JSON.parse(requestOptions.body).text, "[worried] 大丈夫？");
 
     const httpFailed = new ElevenLabsTtsProvider({

@@ -56,6 +56,7 @@ export class StateStore {
         this.asrPartial = null;
         this.userSpeaking = null;
         this.ttsOutput = null;
+        this.fillerOutput = null;
         this.committedAsrSegments = new Set();
     }
 
@@ -113,6 +114,19 @@ export class StateStore {
                 staleAfterMs: null,
             });
             break;
+        case "speech.filler_scheduled":
+        case "speech.filler_started":
+        case "speech.filler_completed":
+        case "speech.filler_cancelled":
+        case "speech.filler_failed":
+        case "speech.filler_suppressed":
+        case "speech.filler_interrupted":
+            this.fillerOutput = makeFact({
+                value: observation.payload,
+                observation,
+                staleAfterMs: null,
+            });
+            break;
         case "action.outcome":
             this.lastActionOutcome = makeFact({
                 value: observation.payload,
@@ -142,6 +156,24 @@ export class StateStore {
         const interruptedAt = new Date(this.clock()).toISOString();
         return {
             type: "speech.output_interrupted",
+            source: "kernel_recovery",
+            observed_at: interruptedAt,
+            payload: {
+                ...previous,
+                status: "interrupted",
+                completed_at: interruptedAt,
+                reason: "kernel_restart",
+                error: null,
+            },
+        };
+    }
+
+    reconcileInterruptedFiller() {
+        const previous = this.fillerOutput?.value;
+        if (previous?.status !== "started") return null;
+        const interruptedAt = new Date(this.clock()).toISOString();
+        return {
+            type: "speech.filler_interrupted",
             source: "kernel_recovery",
             observed_at: interruptedAt,
             payload: {
@@ -295,6 +327,7 @@ export class StateStore {
             },
             output: {
                 tts: this.#publicTtsState(nowMs),
+                filler: this.#publicFillerState(nowMs),
             },
             action: {
                 last_intention: publicFact(this.lastActionIntention, nowMs),
@@ -325,6 +358,28 @@ export class StateStore {
             last_turn_id: fact.value.turn_id,
             requested_emotion: fact.value.emotion,
             requested_intensity: fact.value.intensity,
+            updated_at: fact.observed_at,
+        };
+    }
+
+    #publicFillerState(nowMs) {
+        const fact = publicFact(this.fillerOutput, nowMs);
+        if (fact.status === "unknown") {
+            return {
+                playing: false,
+                last_status: "unknown",
+                last_filler_id: null,
+                last_clip_id: null,
+                kind: null,
+                updated_at: null,
+            };
+        }
+        return {
+            playing: fact.value.status === "started",
+            last_status: fact.value.status,
+            last_filler_id: fact.value.filler_id ?? null,
+            last_clip_id: fact.value.clip_id ?? null,
+            kind: fact.value.kind ?? null,
             updated_at: fact.observed_at,
         };
     }

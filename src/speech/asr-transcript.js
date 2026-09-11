@@ -115,6 +115,8 @@ export class AsrTranscriptService {
         dispatchCommitted,
         hasPersistedId = () => false,
         echoGuard = null,
+        isCapturePaused = () => false,
+        onCaptureSuppressed = async () => {},
         onEchoSuppressed = async () => {},
         clock = () => new Date().toISOString(),
         idempotencyLimit = 1000,
@@ -125,6 +127,8 @@ export class AsrTranscriptService {
         this.dispatchCommitted = dispatchCommitted;
         this.hasPersistedId = hasPersistedId;
         this.echoGuard = echoGuard;
+        this.isCapturePaused = isCapturePaused;
+        this.onCaptureSuppressed = onCaptureSuppressed;
         this.onEchoSuppressed = onEchoSuppressed;
         this.clock = clock;
         this.completed = new BoundedIdCache(idempotencyLimit);
@@ -149,6 +153,12 @@ export class AsrTranscriptService {
 
         const receivedAt = this.clock();
         const segmentKey = `${event.session_id}:${event.segment_id}`;
+        if (this.isCapturePaused(event, receivedAt)) {
+            await this.onCaptureSuppressed({ event, receivedAt });
+            this.completed.add(event.event_id);
+            if (event.kind === "committed") this.committedSegments.add(segmentKey);
+            return { status: "capture_suppressed", kind: event.kind, forwarded_to_llm: false };
+        }
         if (event.kind === "partial") {
             if (!this.committedSegments.has(segmentKey) && event.text.trim()) {
                 await this.ingestPartial(createPartialObservation(event, receivedAt), { persist: false });

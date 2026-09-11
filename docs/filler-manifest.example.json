@@ -1,0 +1,20 @@
+{
+  "schema_version": "1.0",
+  "set_id": "kokomi-fillers-ja-v1",
+  "voice_id": "replace-with-local-voice-id",
+  "generator": "elevenlabs",
+  "generator_model": "eleven_v3",
+  "created_at": "2026-09-12T00:00:00.000Z",
+  "clips": [
+    {
+      "id": "thinking_01",
+      "kind": "thinking",
+      "text": "んー",
+      "path": "thinking_01.wav",
+      "duration_ms": 700,
+      "emotion": "thinking",
+      "intensity": 0.22,
+      "semantic_commitment": "none"
+    }
+  ]
+}

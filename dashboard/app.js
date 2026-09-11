@@ -19,6 +19,7 @@ const serviceNames = {
     faceMemory: "顔記憶",
     tts: "音声出力",
     asr: "音声入力",
+    filler: "フィラー",
 };
 
 const statusLabels = {
@@ -120,7 +121,7 @@ function renderSensors(snapshot) {
 }
 
 function renderServices(snapshot) {
-    const ordered = ["chatgpt", "bme280", "brightness", "actuators", "vision", "faceMemory", "asr", "tts"];
+    const ordered = ["chatgpt", "bme280", "brightness", "actuators", "vision", "faceMemory", "asr", "tts", "filler"];
     const services = ordered.map((id) => snapshot.services.find((item) => item.id === id)).filter(Boolean);
     const healthy = services.filter((service) => ["online", "idle", "disabled"].includes(service.status)).length;
     $("#service-count").textContent = `${healthy}/${services.length} 利用可`;
@@ -364,7 +365,7 @@ function microphoneConfig() {
 function updateMicrophoneUi(asrState, message) {
     const button = $("#microphone-button");
     const status = $("#microphone-status");
-    const active = Boolean(microphoneClient?.isActive);
+    const active = Boolean(microphoneClient?.isStarted);
     button.classList.toggle("active", active);
     button.setAttribute("aria-pressed", String(active));
     button.setAttribute("aria-label", active ? "音声入力を停止" : "音声入力を開始");
@@ -374,7 +375,7 @@ function updateMicrophoneUi(asrState, message) {
 }
 
 function renderMicrophoneAvailability(snapshot) {
-    if (microphoneClient?.isActive) return;
+    if (microphoneClient?.isStarted) return;
     const capability = snapshot.capabilities?.asr;
     const enabled = typeof capability === "object"
         ? capability.enabled
@@ -404,10 +405,10 @@ function bindMicrophone() {
         },
         onDelivered: ({ text, result }) => {
             if (input.value === text) input.value = "";
-            const suppressed = result.status === "echo_suppressed";
+            const suppressed = result.status === "echo_suppressed" || result.status === "capture_suppressed";
             updateMicrophoneUi(
-                microphoneClient.isActive ? "listening" : "idle",
-                suppressed ? "Aliceの自己音声を抑制しました" : "送信済み — 続けて話せます",
+                microphoneClient.isStarted ? "listening" : "idle",
+                suppressed ? "心海の自己音声を抑制しました" : "送信済み — 続けて話せます",
             );
             showToast(
                 suppressed ? "自己音声を抑制しました" : "音声入力を送信しました",
@@ -421,8 +422,32 @@ function bindMicrophone() {
         },
     });
 
+    let controlClientId = null;
+    const captureControl = new EventSource("/api/asr/control");
+    captureControl.addEventListener("hello", (event) => {
+        controlClientId = JSON.parse(event.data).client_id;
+    });
+    captureControl.addEventListener("capture", async (event) => {
+        const command = JSON.parse(event.data);
+        try {
+            await microphoneClient.setCapturePaused(command.paused, command.reason);
+        } finally {
+            if (controlClientId) {
+                fetch("/api/asr/control/ack", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        client_id: controlClientId,
+                        revision: command.revision,
+                        paused: command.paused,
+                    }),
+                }).catch(() => {});
+            }
+        }
+    });
+
     button.addEventListener("click", async () => {
-        if (microphoneClient.isActive) {
+        if (microphoneClient.isStarted) {
             microphoneClient.stop();
             return;
         }
@@ -436,7 +461,10 @@ function bindMicrophone() {
             showToast("音声入力を開始できません", error.message, true);
         }
     });
-    window.addEventListener("beforeunload", () => microphoneClient.stop());
+    window.addEventListener("beforeunload", () => {
+        captureControl.close();
+        microphoneClient.stop();
+    });
 }
 
 function bindForms() {

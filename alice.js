@@ -23,6 +23,12 @@ import { AsrTokenService } from "./src/speech/asr-token.js";
 import { TtsEchoGuard } from "./src/speech/echo-guard.js";
 import { ElevenLabsTtsProvider } from "./src/speech/elevenlabs-tts.js";
 import { TtsAdapter } from "./src/speech/tts-adapter.js";
+import { AsrCaptureCoordinator } from "./src/speech/asr-capture-coordinator.js";
+import { PlaybackCoordinator } from "./src/speech/playback-coordinator.js";
+import { AudioOutputLifecycle } from "./src/speech/audio-output-lifecycle.js";
+import { loadFillerManifest } from "./src/speech/filler-manifest.js";
+import { LocalClipPlayer } from "./src/speech/local-clip-player.js";
+import { FillerController } from "./src/speech/filler-controller.js";
 
 const config = JSON.parse(fs.readFileSync(new URL("./config.json", import.meta.url), "utf8"));
 
@@ -40,6 +46,7 @@ const TOUCH_SENSOR_BINDINGS = config.touch.sensorBindings;
 
 const TTS_ENABLED = config.tts.enabled;
 const ASR_ENABLED = config.asr.enabled;
+const FILLER_ENABLED = config.filler.enabled;
 const ELEVENLABS_VOICE_ID = process.env.ELEVENLABS_VOICE_ID || config.tts.defaultVoiceId;
 const ELEVENLABS_MODEL_ID = process.env.ELEVENLABS_MODEL_ID || config.tts.defaultModelId;
 const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY;
@@ -86,6 +93,15 @@ const runtimeReady = Promise.all([memoryReady, socialReady, eventReady]).then(as
     if (interruptedTts) {
         const observation = behaviorArchitecture.observe(
             interruptedTts,
+            { generateProposals: false },
+        ).observation;
+        socialStore.observe(observation);
+        await eventStore.append(observation, { force: true });
+    }
+    const interruptedFiller = behaviorArchitecture.reconcileInterruptedFiller();
+    if (interruptedFiller) {
+        const observation = behaviorArchitecture.observe(
+            interruptedFiller,
             { generateProposals: false },
         ).observation;
         socialStore.observe(observation);
@@ -184,6 +200,11 @@ const serviceState = {
         label: "Voice input",
         detail: ASR_ENABLED ? "Ready for client connection" : "Disabled in config",
     },
+    filler: {
+        status: FILLER_ENABLED ? "checking" : "disabled",
+        label: "Local filler",
+        detail: FILLER_ENABLED ? "Loading local clips" : "Disabled in config",
+    },
 };
 
 const endpointState = new Map([
@@ -198,6 +219,8 @@ const endpointState = new Map([
     [config.routes.socialProposals, { method: "GET", label: "社会状態候補一覧", calls: 0, errors: 0, trackActivity: false }],
     [config.routes.asrToken, { method: "POST", label: "ASR一時トークン", calls: 0, errors: 0 }],
     [config.routes.asrTranscript, { method: "POST", label: "ASR文字起こし", calls: 0, errors: 0 }],
+    [config.routes.asrControl, { method: "GET", label: "ASR再生制御", calls: 0, errors: 0, trackActivity: false }],
+    [config.routes.asrControlAck, { method: "POST", label: "ASR制御確認", calls: 0, errors: 0, trackActivity: false }],
     ["/api/dashboard/status", { method: "GET", label: "監視スナップショット", calls: 0, errors: 0, trackActivity: false }],
     ["/api/dashboard/events", { method: "GET", label: "リアルタイム監視", calls: 0, errors: 0, trackActivity: false }],
     ["/api/dashboard/actions", { method: "POST", label: "デバイス手動操作", calls: 0, errors: 0 }],
@@ -351,12 +374,18 @@ function publicDashboardState() {
         },
         actionGate: actionGate.snapshot(),
         cognitiveTurns: turnRegistry.snapshot(),
+        audio: {
+            capture: asrCaptureCoordinator.snapshot(),
+            playback: playbackCoordinator.snapshot(),
+            filler: fillerController.snapshot(),
+        },
         persistence: eventStore.snapshot(),
         activity: recentActivity.slice(0, 60),
         capabilities: {
             ttsEnabled: TTS_ENABLED,
             asrEnabled: ASR_ENABLED,
             asr: publicAsrClientConfig(),
+            fillerEnabled: FILLER_ENABLED,
             actions: ["led_change", "tear"],
         },
     };
@@ -366,6 +395,58 @@ function publicDashboardState() {
    ElevenLabs TTS
 --------------------------- */
 const echoGuard = new TtsEchoGuard({ echoGuardMs: config.tts.echoGuardMs });
+const asrCaptureCoordinator = new AsrCaptureCoordinator({
+    ackTimeoutMs: config.asr.captureAckTimeoutMs,
+    resumeGuardMs: config.asr.resumeGuardMs,
+});
+const playbackCoordinator = new PlaybackCoordinator();
+const audioOutputLifecycle = new AudioOutputLifecycle({ playbackCoordinator, captureCoordinator: asrCaptureCoordinator });
+let fillerManifest = null;
+let fillerManifestError = null;
+if (FILLER_ENABLED) {
+    try {
+        fillerManifest = await loadFillerManifest({
+            manifestPath: path.resolve(repositoryDirectory, config.filler.manifestPath),
+            maxClipDurationMs: config.filler.maxClipDurationMs,
+            validEmotions: config.audit.validEmotions,
+        });
+    } catch (error) {
+        fillerManifestError = error.message;
+        console.warn(`Local filler disabled: ${error.message}`);
+    }
+}
+const fillerPlayer = new LocalClipPlayer({
+    command: config.filler.playerCommand,
+    args: config.filler.playerArgs,
+    spawnImpl: spawn,
+});
+const fillerController = new FillerController({
+    config: { ...config.filler, armed: config.filler.armed && Boolean(fillerManifest) },
+    manifest: fillerManifest,
+    player: fillerPlayer,
+    outputLifecycle: audioOutputLifecycle,
+    echoGuard,
+    onObservation: async (input) => {
+        await ingestObservation(input, { forcePersist: true });
+        const status = input.payload.status;
+        updateService("filler", {
+            status: status === "failed" ? "degraded" : status === "started" ? "busy" : "online",
+            detail: `${input.payload.kind ?? "filler"} ${status}: ${input.payload.reason ?? ""}`.trim(),
+        });
+        recordActivity({
+            category: "communication",
+            status: status === "failed" ? "error" : ["cancelled", "suppressed"].includes(status) ? "skipped" : "success",
+            title: `Filler ${status}`,
+            summary: `${input.payload.kind ?? "unknown"} · ${input.payload.reason ?? ""}`,
+            service: "filler",
+            payload: input.payload,
+        });
+    },
+});
+updateService("filler", {
+    status: !FILLER_ENABLED ? "disabled" : fillerManifest ? "online" : "degraded",
+    detail: !FILLER_ENABLED ? "Disabled in config" : fillerManifest ? `Loaded ${fillerManifest.clips.length} local clips` : fillerManifestError,
+});
 const ttsProvider = new ElevenLabsTtsProvider({
     config: {
         ...config.tts,
@@ -384,6 +465,7 @@ const ttsAdapter = new TtsAdapter({
     intensityMin: config.audit.intensityMin,
     intensityMax: config.audit.intensityMax,
     echoGuard,
+    outputLifecycle: audioOutputLifecycle,
     onObservation: async (input) => {
         await ingestObservation(input, { forcePersist: true });
         const status = input.payload.status;
@@ -420,6 +502,17 @@ const asrTokenService = new AsrTokenService({
 const asrTranscriptService = new AsrTranscriptService({
     config: config.asr,
     ingestPartial: async (input, options) => {
+        await fillerController.userSpeechStarted({
+            sessionId: input.payload.session_id,
+            segmentId: input.payload.segment_id,
+        });
+        fillerController.observePartial({
+            sessionId: input.payload.session_id,
+            segmentId: input.payload.segment_id,
+            revision: input.payload.revision,
+            text: input.payload.text,
+            observedAt: input.observed_at,
+        });
         await ingestObservation(input, options);
         updateService("asr", { status: "online", detail: "Receiving partial speech" });
         recordActivity({
@@ -437,10 +530,51 @@ const asrTranscriptService = new AsrTranscriptService({
             },
         });
     },
-    prepareCommitted: (input) => buildCognitiveContext(input),
-    dispatchCommitted: (context) => dispatchCognitiveContext(context, { releaseLeaseOnFailure: false }),
+    prepareCommitted: (input) => {
+        fillerController.commitSegment({
+            sessionId: input.payload.asr.session_id,
+            segmentId: input.payload.asr.segment_id,
+        });
+        return buildCognitiveContext(input);
+    },
+    dispatchCommitted: async (context) => {
+        await dispatchCognitiveContext(context, { releaseLeaseOnFailure: false });
+        const asr = context.trigger.payload.asr;
+        fillerController.scheduleThinking({
+            turnId: context.turn_id,
+            sessionId: asr.session_id,
+            segmentId: asr.segment_id,
+            committedAt: context.trigger.observed_at,
+        });
+    },
     hasPersistedId: (eventId) => eventStore.has(eventId),
     echoGuard,
+    isCapturePaused: (event, receivedAt) => asrCaptureCoordinator.shouldSuppress(event.observed_at ?? receivedAt),
+    onCaptureSuppressed: async ({ event, receivedAt }) => {
+        if (event.kind !== "committed") return;
+        await ingestObservation({
+            id: event.event_id,
+            type: "speech.capture_suppressed",
+            source: "kernel_capture_gate",
+            observed_at: receivedAt,
+            payload: {
+                asr_event_id: event.event_id,
+                session_id: event.session_id,
+                segment_id: event.segment_id,
+                capture_revision: asrCaptureCoordinator.snapshot().revision,
+                reason: "audio_output_active",
+            },
+        }, { forcePersist: true });
+        recordActivity({
+            category: "communication",
+            status: "skipped",
+            title: "ASR capture suppressed",
+            summary: "Transcript arrived while Kokomi audio output was active",
+            direction: "inbound",
+            service: "asr",
+            payload: { event_id: event.event_id },
+        });
+    },
     onEchoSuppressed: async ({ event, echo, receivedAt }) => {
         await ingestObservation({
             id: event.event_id,
@@ -1416,6 +1550,27 @@ app.post(config.routes.asrTranscript, async (req, res) => {
     }
 });
 
+app.get(config.routes.asrControl, (req, res) => {
+    res.set({
+        "Cache-Control": "no-cache, no-transform",
+        "Content-Type": "text/event-stream",
+        Connection: "keep-alive",
+    });
+    res.flushHeaders();
+    const clientId = asrCaptureCoordinator.connect((message) => res.write(message));
+    req.on("close", () => asrCaptureCoordinator.disconnect(clientId));
+});
+
+app.post(config.routes.asrControlAck, (req, res) => {
+    const accepted = asrCaptureCoordinator.acknowledge({
+        clientId: req.body?.client_id,
+        revision: req.body?.revision,
+        paused: req.body?.paused,
+    });
+    if (!accepted) return res.status(409).json({ status: "stale_or_unknown_ack" });
+    return res.json({ status: "accepted" });
+});
+
 app.get("/api/dashboard/status", (req, res) => {
     res.set("Cache-Control", "no-store");
     res.json(publicDashboardState());
@@ -1866,6 +2021,7 @@ async function runLLaVA(prompt) {
             }
 
             turnRegistry.consume(payload.turn_id);
+            await fillerController.markResponseReady(payload.turn_id);
             console.log("accepted JSON:", audit.payload);
             recordActivity({
                 category: "communication",

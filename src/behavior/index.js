@@ -52,6 +52,10 @@ export class BehaviorArchitecture {
         return this.stateStore.reconcileInterruptedTts();
     }
 
+    reconcileInterruptedFiller() {
+        return this.stateStore.reconcileInterruptedFiller();
+    }
+
     composeContext(trigger, {
         memories = [],
         social = {},

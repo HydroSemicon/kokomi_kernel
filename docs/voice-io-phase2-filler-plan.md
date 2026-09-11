@@ -1,9 +1,9 @@
 # Voice I/O Phase 2: Local Filler and Backchannel Plan
 
-Status: Planning baseline  
+Status: Stage 2A implemented; Stage 2B implemented but independently unarmed
 Depends on: `docs/voice-io-phase1-spec.md`  
 Runtime generation: deterministic Kernel policy plus local audio clips  
-Default state: disabled and unarmed
+Default state: thinking filler armed with validated local clips; listening backchannel unarmed
 
 ## 1. Goal
 
@@ -110,13 +110,13 @@ ASR committed
                                    main TTS waits for/coordinates with clip
 ```
 
-Initial timing recommendation:
+Implemented timing:
 
-- schedule at 650 ms after the committed transcript is accepted;
+- schedule at 1000 ms after the committed transcript is accepted;
 - play at most one thinking filler per turn;
 - do not start if main LLM output has already been accepted;
 - do not start if the user has begun another utterance;
-- choose clips no longer than 900 ms;
+- generated clips are bounded to 1800 ms (the current thinking set is 806-999 ms);
 - apply a global 4-second cooldown;
 - main semantic speech always has priority.
 
@@ -149,10 +149,10 @@ exact stimulus set.
 Suggested layout:
 
 ```text
-assets/fillers/manifest.json
-assets/fillers/thinking_01.wav
-assets/fillers/thinking_02.wav
-assets/fillers/listening_01.wav
+data/runtime/fillers/manifest.json
+data/runtime/fillers/thinking_01.wav
+data/runtime/fillers/thinking_02.wav
+data/runtime/fillers/listening_01.wav
 ```
 
 Suggested manifest:
@@ -213,15 +213,15 @@ Add a configuration section conceptually equivalent to:
 ```json
 {
   "filler": {
-    "enabled": false,
-    "armed": false,
-    "manifestPath": "assets/fillers/manifest.json",
+    "enabled": true,
+    "armed": true,
+    "manifestPath": "data/runtime/fillers/manifest.json",
     "experimentSeed": "kokomi-fillers-v1",
-    "maxClipDurationMs": 900,
+    "maxClipDurationMs": 1800,
     "globalCooldownMs": 4000,
     "thinking": {
       "enabled": true,
-      "delayMs": 650,
+      "delayMs": 1000,
       "maxPerTurn": 1
     },
     "listening": {
@@ -337,8 +337,12 @@ contamination. If it does not, prefer one of these follow-ups:
 2. use a nonverbal LED/head/body cue instead of audio;
 3. add a duplex audio frontend with an explicit playback reference.
 
-Do not solve this by muting ASR during the clip; that would discard the user's
-speech and bias interaction data.
+Main TTS and post-commit thinking fillers use a deliberate half-duplex capture
+gate: the browser closes Scribe before playback and reconnects after playback.
+This prevents self-transcription but deliberately gives up barge-in during robot
+speech. Listening backchannels do not use that gate because muting them would
+discard the user's still-active speech; they therefore remain unarmed until the
+actual-device echo experiment passes.
 
 ## 12. Filler observations and state
 
@@ -429,7 +433,7 @@ Required cases:
 1. Manifest path traversal, duplicates, invalid kinds, long clips, and semantic
    commitments are rejected.
 2. A committed ASR turn schedules exactly one thinking filler.
-3. An audited response before 650 ms cancels the scheduled filler.
+3. An audited response before 1000 ms cancels the scheduled filler.
 4. A slow response starts one thinking clip after the configured delay.
 5. New user speech cancels or stops the thinking filler.
 6. Typed input does not trigger a filler.
@@ -449,7 +453,7 @@ Required cases:
 ### Stage 2A
 
 1. Use one short verified thinking WAV and enable/arm only thinking filler.
-2. Speak a sentence and artificially delay the LLM response.
+2. Speak a sentence using the observed real response latency (tests use a fake timer).
 3. Confirm filler starts near the configured delay and main TTS follows without
    overlap.
 4. Remove the delay and confirm fast responses do not emit unnecessary filler.

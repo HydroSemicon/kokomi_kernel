@@ -1,3 +1,5 @@
+import { AliceAsrClient } from "/dashboard/asr-client.js";
+
 const state = {
     snapshot: null,
     filter: "all",
@@ -16,6 +18,7 @@ const serviceNames = {
     vision: "ビジョン",
     faceMemory: "顔記憶",
     tts: "音声出力",
+    asr: "音声入力",
 };
 
 const statusLabels = {
@@ -117,7 +120,7 @@ function renderSensors(snapshot) {
 }
 
 function renderServices(snapshot) {
-    const ordered = ["chatgpt", "bme280", "brightness", "actuators", "vision", "faceMemory", "tts"];
+    const ordered = ["chatgpt", "bme280", "brightness", "actuators", "vision", "faceMemory", "asr", "tts"];
     const services = ordered.map((id) => snapshot.services.find((item) => item.id === id)).filter(Boolean);
     const healthy = services.filter((service) => ["online", "idle", "disabled"].includes(service.status)).length;
     $("#service-count").textContent = `${healthy}/${services.length} 利用可`;
@@ -268,6 +271,7 @@ function render(snapshot) {
     renderActivity(snapshot);
     renderEndpoints(snapshot);
     renderCognition(snapshot);
+    renderMicrophoneAvailability(snapshot);
 }
 
 async function fetchSnapshot({ quiet = false } = {}) {
@@ -347,6 +351,92 @@ function showToast(title, message, isError = false) {
     toast.innerHTML = `<span aria-hidden="true">${isError ? "!" : "✓"}</span><div><strong>${escapeHtml(title)}</strong><span>${escapeHtml(message)}</span></div>`;
     $("#toast-region").append(toast);
     setTimeout(() => toast.remove(), 3800);
+}
+
+let microphoneClient = null;
+
+function microphoneConfig() {
+    const capability = state.snapshot?.capabilities?.asr;
+    if (capability && typeof capability === "object") return capability;
+    return { enabled: state.snapshot?.capabilities?.asrEnabled !== false };
+}
+
+function updateMicrophoneUi(asrState, message) {
+    const button = $("#microphone-button");
+    const status = $("#microphone-status");
+    const active = Boolean(microphoneClient?.isActive);
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", String(active));
+    button.setAttribute("aria-label", active ? "音声入力を停止" : "音声入力を開始");
+    button.title = active ? "音声入力を停止" : "音声入力を開始";
+    status.textContent = message;
+    status.classList.toggle("error", asrState === "error" || asrState === "unavailable");
+}
+
+function renderMicrophoneAvailability(snapshot) {
+    if (microphoneClient?.isActive) return;
+    const capability = snapshot.capabilities?.asr;
+    const enabled = typeof capability === "object"
+        ? capability.enabled
+        : snapshot.capabilities?.asrEnabled;
+    $("#microphone-button").disabled = !enabled;
+    updateMicrophoneUi(
+        enabled ? "idle" : "unavailable",
+        enabled ? "マイクボタンで音声入力を開始できます" : "音声入力は設定で無効です",
+    );
+}
+
+function bindMicrophone() {
+    const input = $("#message-input");
+    const button = $("#microphone-button");
+    microphoneClient = new AliceAsrClient({
+        getConfig: microphoneConfig,
+        onStatus: ({ state: asrState, message }) => {
+            button.disabled = false;
+            updateMicrophoneUi(asrState, message);
+        },
+        onPartial: (text) => {
+            input.value = text;
+        },
+        onCommitted: (text) => {
+            input.value = text;
+            updateMicrophoneUi("sending", "確定した音声をChatGPTへ送信中");
+        },
+        onDelivered: ({ text, result }) => {
+            if (input.value === text) input.value = "";
+            const suppressed = result.status === "echo_suppressed";
+            updateMicrophoneUi(
+                microphoneClient.isActive ? "listening" : "idle",
+                suppressed ? "Aliceの自己音声を抑制しました" : "送信済み — 続けて話せます",
+            );
+            showToast(
+                suppressed ? "自己音声を抑制しました" : "音声入力を送信しました",
+                suppressed ? "ChatGPTへの重複送信はありません" : text,
+            );
+        },
+        onDeliveryError: (error, event) => {
+            if (event.kind === "partial") return;
+            updateMicrophoneUi("error", "送信に失敗しました — 認識結果を入力欄に残しています");
+            showToast("音声入力の送信に失敗しました", error.message, true);
+        },
+    });
+
+    button.addEventListener("click", async () => {
+        if (microphoneClient.isActive) {
+            microphoneClient.stop();
+            return;
+        }
+        if (microphoneConfig().enabled === false) {
+            showToast("音声入力を開始できません", "config.jsonでASRが無効です", true);
+            return;
+        }
+        try {
+            await microphoneClient.start();
+        } catch (error) {
+            showToast("音声入力を開始できません", error.message, true);
+        }
+    });
+    window.addEventListener("beforeunload", () => microphoneClient.stop());
 }
 
 function bindForms() {
@@ -438,6 +528,7 @@ function updateClock() {
     }
 }
 
+bindMicrophone();
 bindForms();
 bindNavigation();
 updateClock();

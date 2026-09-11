@@ -139,6 +139,15 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .communications-grid { display: grid; grid-template-columns: 1.15fr .85fr; gap: 18px; }
 .composer-panel form { padding: 20px; }
 .composer-panel label { display: block; margin-bottom: 8px; color: #4e5c57; font-size: 11px; font-weight: 750; }
+.message-input-wrap { position: relative; }
+.message-input-wrap textarea { padding-right: 60px; }
+.microphone-button { position: absolute; right: 11px; bottom: 12px; width: 39px; height: 39px; display: grid; place-items: center; border: 1px solid #c8d5d0; border-radius: 50%; background: white; color: var(--accent); cursor: pointer; box-shadow: 0 2px 8px rgba(22,34,29,.08); transition: .16s ease; }
+.microphone-button:hover { border-color: var(--accent); background: var(--accent-soft); }
+.microphone-button:disabled { color: #99a49f; background: #f2f4f3; cursor: not-allowed; box-shadow: none; }
+.microphone-button svg { width: 20px; height: 20px; fill: currentColor; }
+.microphone-button.active { border-color: #b54242; background: #c64e4e; color: white; box-shadow: 0 0 0 5px rgba(198,78,78,.13); animation: microphone-pulse 1.6s ease-in-out infinite; }
+.microphone-status { min-height: 16px; margin: 7px 2px 0; color: var(--muted); font-size: 10px; }
+.microphone-status.error { color: var(--danger); }
 textarea { width: 100%; resize: vertical; padding: 13px 14px; border: 1px solid #cfd8d4; border-radius: 8px; background: #fbfcfc; color: var(--ink); line-height: 1.7; }
 textarea:focus, input:focus { border-color: var(--accent); }
 .form-foot { margin-top: 12px; display: flex; align-items: center; justify-content: space-between; gap: 12px; color: var(--muted); font-size: 10px; }
@@ -221,6 +230,7 @@ footer { display: flex; justify-content: space-between; padding-top: 19px; borde
 
 @keyframes spin { to { transform: rotate(360deg); } }
 @keyframes slide-in { from { opacity: 0; transform: translateY(8px); } }
+@keyframes microphone-pulse { 50% { box-shadow: 0 0 0 9px rgba(198,78,78,.07); } }
 
 @media (max-width: 1050px) {
     .sidebar { width: 78px; padding-inline: 13px; }

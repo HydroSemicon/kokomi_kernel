@@ -231,7 +231,12 @@ Kernelは次の流れで処理します。
 ### 音声入力（Phase 1）
 
 音声入出力は既定で無効です。`.env`に`ELEVENLABS_API_KEY`を設定し、
-`config.json`の`asr.enabled`を`true`にしてKernelを再起動した後、次を開きます。
+`config.json`の`asr.enabled`を`true`にしてKernelを再起動すると、統合管理ページの
+「ChatGPTへ指示」入力欄にマイクボタンが表示されます。マイクボタンを押すと部分
+認識が入力欄へ表示され、VADで発話が確定すると自動送信されます。もう一度押すと
+音声入力を停止します。
+
+従来の単独動作確認ページも引き続き利用できます。
 
 ```text
 http://localhost:3000/asr

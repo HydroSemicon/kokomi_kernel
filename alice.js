@@ -308,6 +308,17 @@ function publicSensorState() {
     };
 }
 
+function publicAsrClientConfig() {
+    return {
+        enabled: ASR_ENABLED,
+        modelId: config.asr.modelId,
+        languageCode: config.asr.languageCode,
+        commitStrategy: config.asr.commitStrategy,
+        vadSilenceThresholdSecs: config.asr.vadSilenceThresholdSecs,
+        minSpeechDurationMs: config.asr.minSpeechDurationMs,
+    };
+}
+
 function publicDashboardState() {
     const services = Object.entries(serviceState).map(([id, service]) => ({ id, ...service }));
     const endpoints = [...endpointState.entries()].map(([route, endpoint]) => ({
@@ -345,6 +356,7 @@ function publicDashboardState() {
         capabilities: {
             ttsEnabled: TTS_ENABLED,
             asrEnabled: ASR_ENABLED,
+            asr: publicAsrClientConfig(),
             actions: ["led_change", "tear"],
         },
     };
@@ -1362,13 +1374,7 @@ app.get(["/asr", "/asr/"], async (req, res) => {
     try {
         const clientPath = path.join(repositoryDirectory, "realtime_stt.html");
         const template = await fs.promises.readFile(clientPath, "utf8");
-        const publicConfig = JSON.stringify({
-            modelId: config.asr.modelId,
-            languageCode: config.asr.languageCode,
-            commitStrategy: config.asr.commitStrategy,
-            vadSilenceThresholdSecs: config.asr.vadSilenceThresholdSecs,
-            minSpeechDurationMs: config.asr.minSpeechDurationMs,
-        }).replace(/</gu, "\\u003c");
+        const publicConfig = JSON.stringify(publicAsrClientConfig()).replace(/</gu, "\\u003c");
         res.type("html").set("Cache-Control", "no-store").send(
             template.replace('"__ALICE_ASR_CONFIG__"', publicConfig),
         );
@@ -1381,7 +1387,7 @@ app.post(config.routes.asrToken, async (req, res) => {
     try {
         const payload = await asrTokenService.issue(req.socket.remoteAddress);
         updateService("asr", { status: "online", detail: "Client token issued" });
-        return res.json(payload);
+        return res.json({ ...payload, client_config: publicAsrClientConfig() });
     } catch (error) {
         const statusCode = error.statusCode ?? 502;
         updateService("asr", {

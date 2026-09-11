@@ -7,6 +7,7 @@ import {
     validateAsrTranscript,
 } from "../src/speech/asr-transcript.js";
 import { AsrTokenService, isLoopbackAddress } from "../src/speech/asr-token.js";
+import { AliceAsrClient } from "../dashboard/asr-client.js";
 
 const baseEvent = {
     event_id: "asr_session1_segment1_revision1",
@@ -19,10 +20,74 @@ const baseEvent = {
     language_code: "ja",
 };
 
-test("browser ASR client uses a pinned ElevenLabs SDK version", async () => {
+test("browser ASR clients share a locally served wrapper with a pinned ElevenLabs SDK version", async () => {
     const html = await fs.readFile(new URL("../realtime_stt.html", import.meta.url), "utf8");
-    assert.match(html, /@elevenlabs\/client@1\.15\.1/u);
-    assert.doesNotMatch(html, /@elevenlabs\/client["']/u);
+    const dashboard = await fs.readFile(new URL("../dashboard/index.html", import.meta.url), "utf8");
+    const client = await fs.readFile(new URL("../dashboard/asr-client.js", import.meta.url), "utf8");
+    assert.match(html, /\/dashboard\/asr-client\.js/u);
+    assert.match(dashboard, /id="microphone-button"/u);
+    assert.match(client, /https:\/\/esm\.sh\/@elevenlabs\/client@1\.15\.1/u);
+    assert.doesNotMatch(client, /cdn\.skypack\.dev/u);
+});
+
+test("shared browser ASR client streams partial text and delivers committed speech", async () => {
+    const listeners = new Map();
+    const connection = {
+        on: (event, listener) => listeners.set(event, listener),
+        close: () => {},
+    };
+    const posted = [];
+    let connectOptions;
+    let deliveredResolve;
+    const delivered = new Promise((resolve) => { deliveredResolve = resolve; });
+    const client = new AliceAsrClient({
+        config: {
+            languageCode: "ja",
+            commitStrategy: "vad",
+            vadSilenceThresholdSecs: 0.8,
+            minSpeechDurationMs: 250,
+        },
+        sdkLoader: async () => ({
+            Scribe: {
+                connect: (options) => {
+                    connectOptions = options;
+                    return connection;
+                },
+            },
+            CommitStrategy: { VAD: "vad", MANUAL: "manual" },
+            RealtimeEvents: {
+                OPEN: "open",
+                ERROR: "error",
+                CLOSE: "close",
+                PARTIAL_TRANSCRIPT: "partial",
+                COMMITTED_TRANSCRIPT: "committed",
+            },
+        }),
+        fetchImpl: async (url, options) => {
+            if (url === "/api/asr/token") {
+                return {
+                    ok: true,
+                    json: async () => ({ token: "one-time-token", model_id: "scribe_v2_realtime" }),
+                };
+            }
+            posted.push(JSON.parse(options.body));
+            return { ok: true, json: async () => ({ status: "accepted" }) };
+        },
+        onDelivered: deliveredResolve,
+    });
+
+    await client.start();
+    assert.equal(connectOptions.token, "one-time-token");
+    assert.equal(connectOptions.commitStrategy, "vad");
+    listeners.get("partial")({ text: "こん" });
+    listeners.get("committed")({ text: "こんにちは", language_code: "ja" });
+    await delivered;
+
+    assert.deepEqual(posted.map((event) => event.kind), ["partial", "committed"]);
+    assert.equal(posted[1].text, "こんにちは");
+    assert.equal(posted[1].revision, 1);
+    client.stop();
+    assert.equal(client.isActive, false);
 });
 
 test("ASR transcript validation rejects malformed protocol fields", () => {

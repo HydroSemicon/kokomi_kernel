@@ -109,7 +109,13 @@
                             <div class="panel-head"><div><p class="eyebrow">USER INPUT</p><h2>ChatGPTへ指示</h2></div><span class="route-label">POST /user_input</span></div>
                             <form id="message-form">
                                 <label for="message-input">メッセージ</label>
-                                <textarea id="message-input" rows="5" maxlength="2000" placeholder="例：現在の部屋の様子を教えて"></textarea>
+                                <div class="message-input-wrap">
+                                    <textarea id="message-input" rows="5" maxlength="2000" placeholder="例：現在の部屋の様子を教えて"></textarea>
+                                    <button id="microphone-button" class="microphone-button" type="button" aria-label="音声入力を開始" aria-pressed="false" title="音声入力を開始" disabled>
+                                        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15.5a3.5 3.5 0 0 0 3.5-3.5V6a3.5 3.5 0 1 0-7 0v6a3.5 3.5 0 0 0 3.5 3.5Zm-1-9.5a1 1 0 1 1 2 0v6a1 1 0 1 1-2 0V6Zm-5 5a1 1 0 0 1 1 1 5 5 0 0 0 10 0 1 1 0 1 1 2 0 7 7 0 0 1-6 6.92V21h3a1 1 0 1 1 0 2H8a1 1 0 1 1 0-2h3v-2.08A7 7 0 0 1 5 12a1 1 0 0 1 1-1Z"/></svg>
+                                    </button>
+                                </div>
+                                <p id="microphone-status" class="microphone-status" aria-live="polite">音声入力を確認中</p>
                                 <div class="form-foot"><span><kbd>Ctrl</kbd> + <kbd>Enter</kbd> で送信</span><button class="button primary" type="submit">ChatGPTへ送信 <span>→</span></button></div>
                             </form>
                         </article>

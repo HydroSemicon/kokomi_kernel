@@ -157,7 +157,7 @@
     },
 
     "asr": {
-        "enabled": false,
+        "enabled": true,
         "provider": "elevenlabs_scribe",
         "modelId": "scribe_v2_realtime",
         "languageCode": "ja",
@@ -170,7 +170,7 @@
     },
 
     "tts": {
-        "enabled": false,
+        "enabled": true,
         "provider": "elevenlabs",
         "baseUrl": "https://api.elevenlabs.io/v1/text-to-speech",
         "defaultVoiceId": "JgWCVquTJEvtfo5gWQkx",

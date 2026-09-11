@@ -5,7 +5,7 @@
   "main": "server.js",
   "scripts": {
     "test": "node --test",
-    "generate:fillers": "node scripts/generate-fillers.js"
+    "generate:fillers": "node archives/tools/generate-fillers.js"
   },
   "dependencies": {
     "@atproto/api": "^0.19.13",

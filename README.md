@@ -2,6 +2,7 @@
 
 ![Status](https://img.shields.io/badge/status-research%20prototype-6f42c1)
 ![Protocol](https://img.shields.io/badge/cognitive%20protocol-JSON%201.2-0b7285)
+[![CI](https://github.com/taka-k22/kokomi_kernel/actions/workflows/test.yml/badge.svg)](https://github.com/taka-k22/kokomi_kernel/actions/workflows/test.yml)
 ![Tests](https://img.shields.io/badge/tests-55%20passing-2ea44f)
 ![Runtime](https://img.shields.io/badge/runtime-Node.js%20ESM-339933?logo=node.js&logoColor=white)
 ![License](https://img.shields.io/badge/license-MIT-blue)

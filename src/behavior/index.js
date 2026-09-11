@@ -6,10 +6,10 @@ import { ContextComposer } from "./context-composer.js";
 import { DriveSystem } from "./drive-system.js";
 
 export class BehaviorArchitecture {
-    constructor({ config = {}, clock = () => Date.now() } = {}) {
+    constructor({ config = {}, clock = () => Date.now(), asrPartialTtlMs = 2000 } = {}) {
         this.clock = clock;
         const isoClock = () => new Date(clock()).toISOString();
-        this.stateStore = new StateStore({ clock, freshness: config.freshness });
+        this.stateStore = new StateStore({ clock, freshness: config.freshness, asrPartialTtlMs });
         this.worldModel = new WorldModel({ thresholds: config.thresholds });
         this.driveSystem = new DriveSystem({ clock, config: config.drives });
         this.behaviorEngine = new SpontaneousBehaviorEngine({
@@ -46,6 +46,14 @@ export class BehaviorArchitecture {
             drives: this.driveSystem.snapshot({ state, world }),
             pending_proposals: this.peekPendingProposals(),
         };
+    }
+
+    reconcileInterruptedTts() {
+        return this.stateStore.reconcileInterruptedTts();
+    }
+
+    reconcileInterruptedFiller() {
+        return this.stateStore.reconcileInterruptedFiller();
     }
 
     composeContext(trigger, {

@@ -156,12 +156,45 @@
         "endedAction": "petting_ended"
     },
 
+    "asr": {
+        "enabled": true,
+        "provider": "elevenlabs_scribe",
+        "modelId": "scribe_v2_realtime",
+        "languageCode": "ja",
+        "commitStrategy": "vad",
+        "vadSilenceThresholdSecs": 0.8,
+        "minSpeechDurationMs": 250,
+        "partialTtlMs": 2000,
+        "maxTextLength": 2000,
+        "tokenRouteLoopbackOnly": true,
+        "captureAckTimeoutMs": 650,
+        "resumeGuardMs": 400
+    },
+
     "tts": {
-        "enabled": false,
+        "enabled": true,
+        "provider": "elevenlabs",
         "baseUrl": "https://api.elevenlabs.io/v1/text-to-speech",
         "defaultVoiceId": "JgWCVquTJEvtfo5gWQkx",
         "defaultModelId": "eleven_v3",
         "defaultOutputFormat": "mp3_44100_128",
+        "similarityBoost": 0.75,
+        "speakerBoost": true,
+        "stabilityAtIntensityZero": 0.65,
+        "stabilityAtIntensityOne": 0.35,
+        "styleAtIntensityZero": 0.0,
+        "styleAtIntensityOne": 0.35,
+        "echoGuardMs": 1000,
+        "emotionTags": {
+            "neutral": null,
+            "happy": "[happily]",
+            "calm": "[calmly]",
+            "sad": "[sad]",
+            "angry": "[angry]",
+            "surprised": "[surprised]",
+            "fear": "[worried]",
+            "thinking": "[thoughtfully]"
+        },
         "playerCommand": "ffplay",
         "playerArgs": [
             "-nodisp",
@@ -169,6 +202,35 @@
             "-loglevel",
             "quiet",
             "-"
+        ]
+    },
+
+    "filler": {
+        "enabled": true,
+        "armed": true,
+        "manifestPath": "data/runtime/fillers/manifest.json",
+        "experimentSeed": "kokomi-fillers-ja-v1",
+        "maxClipDurationMs": 1800,
+        "globalCooldownMs": 4000,
+        "thinking": {
+            "enabled": true,
+            "delayMs": 1000,
+            "maxPerTurn": 1
+        },
+        "listening": {
+            "enabled": true,
+            "armed": false,
+            "minimumSpeechMs": 1800,
+            "minimumPartialCharacters": 8,
+            "cooldownMs": 6000,
+            "maxPerSegment": 1
+        },
+        "playerCommand": "ffplay",
+        "playerArgs": [
+            "-nodisp",
+            "-autoexit",
+            "-loglevel",
+            "quiet"
         ]
     },
 
@@ -202,7 +264,11 @@
         "behaviorState": "/api/behavior/state",
         "behaviorTick": "/api/behavior/tick",
         "memoryProposals": "/api/memory/proposals",
-        "socialProposals": "/api/social/proposals"
+        "socialProposals": "/api/social/proposals",
+        "asrToken": "/api/asr/token",
+        "asrTranscript": "/asr/transcript",
+        "asrControl": "/api/asr/control",
+        "asrControlAck": "/api/asr/control/ack"
     },
 
     "server": {

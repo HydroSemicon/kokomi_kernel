@@ -1,78 +1,85 @@
 <!DOCTYPE html>
-<html>
+<html lang="ja">
 <head>
   <meta charset="utf-8">
-  <title>Realtime STT</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Alice Realtime STT</title>
 </head>
 <body>
   <button id="startBtn">Start</button>
-  <button id="stopBtn">Stop</button>
+  <button id="stopBtn" disabled>Stop</button>
+  <p id="status">停止中</p>
   <pre id="output"></pre>
 
   <script type="module">
-    import { Scribe, RealtimeEvents } from "https://cdn.skypack.dev/@elevenlabs/client";
+    import { AliceAsrClient } from "/dashboard/asr-client.js";
 
-    let connection = null;
+    const injectedConfig = "__ALICE_ASR_CONFIG__";
+    const asrConfig = typeof injectedConfig === "object" ? injectedConfig : {
+      modelId: "scribe_v2_realtime",
+      languageCode: "ja",
+      commitStrategy: "vad",
+      vadSilenceThresholdSecs: 0.8,
+      minSpeechDurationMs: 250,
+    };
     const output = document.getElementById("output");
+    const status = document.getElementById("status");
+    const startButton = document.getElementById("startBtn");
+    const stopButton = document.getElementById("stopBtn");
+    let committedText = [];
+    const client = new AliceAsrClient({
+      config: asrConfig,
+      onStatus: ({ state, message }) => {
+        status.textContent = message;
+        startButton.disabled = state === "connecting" || state === "listening";
+        stopButton.disabled = state === "idle" || state === "error";
+      },
+      onPartial: (text) => {
+        output.textContent = [...committedText, text].filter(Boolean).join("\n");
+      },
+      onCommitted: (text) => {
+        if (text) committedText.push(text);
+        output.textContent = committedText.join("\n");
+      },
+      onDelivered: ({ result }) => {
+        status.textContent = result.status === "echo_suppressed" ? "自己音声を抑制" : "確定発話を送信済み";
+      },
+      onDeliveryError: (error, event) => {
+        status.textContent = event.kind === "partial"
+          ? "部分認識の送信に失敗（認識は継続中）"
+          : `確定発話の送信に失敗: ${error.message}`;
+      },
+    });
 
-    document.getElementById("startBtn").onclick = start;
-    document.getElementById("stopBtn").onclick = stop;
-
-    async function start() {
-      console.log("start clicked");
-
-      // トークン取得
-      const res = await fetch("http://localhost:3000/scribe-token");
-      const { token } = await res.json();
-      console.log("token:", token);
-
-      // 接続
-      connection = Scribe.connect({
-        token,
-        modelId: "scribe_v2_realtime",
-        microphone: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-        },
-      });
-
-      // --- デバッグ ---
-      connection.on(RealtimeEvents.OPEN, () => {
-        console.log("WS OPEN");
-      });
-
-      connection.on(RealtimeEvents.ERROR, (e) => {
-        console.error("ERROR", e);
-      });
-
-      connection.on(RealtimeEvents.CLOSE, () => {
-        console.log("WS CLOSED");
-      });
-
-      // --- リアルタイム表示 ---
-      connection.on(RealtimeEvents.PARTIAL_TRANSCRIPT, (data) => {
-        console.log("PARTIAL:", data.text);
-
-        // 上書き表示
-        output.textContent = data.text;
-      });
-
-      // --- 確定 ---
-      connection.on(RealtimeEvents.COMMITTED_TRANSCRIPT, (data) => {
-        console.log("FINAL:", data.text);
-
-        // 改行して確定
-        output.textContent += "\n" + data.text;
-      });
-    }
-
-    function stop() {
-      if (connection) {
-        connection.close();
-        connection = null;
+    let controlClientId = null;
+    const control = new EventSource("/api/asr/control");
+    control.addEventListener("hello", (event) => {
+      controlClientId = JSON.parse(event.data).client_id;
+    });
+    control.addEventListener("capture", async (event) => {
+      const command = JSON.parse(event.data);
+      try {
+        await client.setCapturePaused(command.paused, command.reason);
+      } finally {
+        if (controlClientId) {
+          fetch("/api/asr/control/ack", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              client_id: controlClientId,
+              revision: command.revision,
+              paused: command.paused,
+            }),
+          }).catch(() => {});
+        }
       }
-    }
+    });
+    control.onerror = () => {
+      if (client.capturePaused) status.textContent = "制御接続を再接続中 — マイク停止を維持しています";
+    };
+
+    startButton.onclick = () => client.start().catch(() => {});
+    stopButton.onclick = () => client.stop();
   </script>
 </body>
 </html>

@@ -377,11 +377,30 @@ a separate vision model. Do not request vision again in response to this message
 
 # User input trigger
 
-The user's utterance arrives in this form:
+Typed input and committed ASR input both arrive as `interaction.user_input`.
+Only a committed ASR transcript is a user statement. Partial ASR hypotheses are
+transient Kernel state and are never sent as a cognitive turn.
+
+Typed input:
 
 {
   "type": "interaction.user_input",
   "payload": { "text": "気分はどう？" }
+}
+
+Committed speech input may add modality and provider metadata:
+
+{
+  "type": "interaction.user_input",
+  "payload": {
+    "text": "気分はどう？",
+    "modality": "speech",
+    "asr": {
+      "session_id": "session123",
+      "segment_id": "segment7",
+      "language_code": "ja"
+    }
+  }
 }
 
 Treat `trigger.payload.text` as the user's message.

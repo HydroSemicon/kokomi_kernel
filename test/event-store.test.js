@@ -62,3 +62,54 @@ test("replayed observations rebuild state without replaying spontaneous proposal
     assert.equal(architecture.snapshot().state.interaction.being_petted.value, true);
     assert.equal(architecture.peekPendingProposals().length, 0);
 });
+
+test("startup reconciliation persists an interrupted outcome for unfinished TTS playback", async (context) => {
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), "kokomi-tts-recovery-test-"));
+    context.after(() => fs.rm(directory, { recursive: true, force: true }));
+    const filePath = path.join(directory, "observations.jsonl");
+    let nowMs = Date.parse("2026-09-10T00:00:00.000Z");
+    const store = new EventStore({ filePath, clock: () => nowMs });
+    const original = new BehaviorArchitecture({ clock: () => nowMs }).observe({
+        type: "speech.output_started",
+        source: "tts_adapter",
+        payload: {
+            turn_id: "turn_1",
+            emotion: "calm",
+            intensity: 0.4,
+            provider: "elevenlabs",
+            model_id: "eleven_v3",
+            requested_at: "2026-09-10T00:00:00.000Z",
+            started_at: "2026-09-10T00:00:00.000Z",
+            original_text: "こんにちは",
+            rendered_text: "[calmly] こんにちは",
+            status: "started",
+            error: null,
+        },
+    }, { generateProposals: false }).observation;
+    await store.append(original, { force: true });
+
+    nowMs += 1_000;
+    const recovered = new BehaviorArchitecture({ clock: () => nowMs });
+    for (const observation of await new EventStore({ filePath }).initialize()) {
+        recovered.observe(observation, { generateProposals: false });
+    }
+    assert.equal(recovered.snapshot().state.output.tts.playing, true);
+
+    const recoveryInput = recovered.reconcileInterruptedTts();
+    assert.equal(recoveryInput.payload.reason, "kernel_restart");
+    const recoveryObservation = recovered.observe(
+        recoveryInput,
+        { generateProposals: false },
+    ).observation;
+    await store.append(recoveryObservation, { force: true });
+    assert.equal(recovered.snapshot().state.output.tts.playing, false);
+    assert.equal(recovered.snapshot().state.output.tts.last_status, "interrupted");
+
+    const replayed = new BehaviorArchitecture({ clock: () => nowMs });
+    for (const observation of await new EventStore({ filePath }).initialize()) {
+        replayed.observe(observation, { generateProposals: false });
+    }
+    assert.equal(replayed.snapshot().state.output.tts.playing, false);
+    assert.equal(replayed.snapshot().state.output.tts.last_status, "interrupted");
+    assert.equal(replayed.reconcileInterruptedTts(), null);
+});

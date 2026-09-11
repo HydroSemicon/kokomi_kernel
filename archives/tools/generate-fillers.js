@@ -3,9 +3,9 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { buildElevenLabsTtsRequest } from "../src/speech/elevenlabs-tts.js";
+import { buildElevenLabsTtsRequest } from "../../src/speech/elevenlabs-tts.js";
 
-const repositoryDirectory = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
+const repositoryDirectory = path.dirname(path.dirname(path.dirname(fileURLToPath(import.meta.url))));
 const config = JSON.parse(await fs.readFile(path.join(repositoryDirectory, "config.json"), "utf8"));
 const outputDirectory = path.resolve(repositoryDirectory, config.filler.manifestPath, "..");
 const apiKey = process.env.ELEVENLABS_API_KEY;

@@ -156,12 +156,43 @@
         "endedAction": "petting_ended"
     },
 
+    "asr": {
+        "enabled": false,
+        "provider": "elevenlabs_scribe",
+        "modelId": "scribe_v2_realtime",
+        "languageCode": "ja",
+        "commitStrategy": "vad",
+        "vadSilenceThresholdSecs": 0.8,
+        "minSpeechDurationMs": 250,
+        "partialTtlMs": 2000,
+        "maxTextLength": 2000,
+        "tokenRouteLoopbackOnly": true
+    },
+
     "tts": {
         "enabled": false,
+        "provider": "elevenlabs",
         "baseUrl": "https://api.elevenlabs.io/v1/text-to-speech",
         "defaultVoiceId": "JgWCVquTJEvtfo5gWQkx",
         "defaultModelId": "eleven_v3",
         "defaultOutputFormat": "mp3_44100_128",
+        "similarityBoost": 0.75,
+        "speakerBoost": true,
+        "stabilityAtIntensityZero": 0.65,
+        "stabilityAtIntensityOne": 0.35,
+        "styleAtIntensityZero": 0.0,
+        "styleAtIntensityOne": 0.35,
+        "echoGuardMs": 1000,
+        "emotionTags": {
+            "neutral": null,
+            "happy": "[happily]",
+            "calm": "[calmly]",
+            "sad": "[sad]",
+            "angry": "[angry]",
+            "surprised": "[surprised]",
+            "fear": "[worried]",
+            "thinking": "[thoughtfully]"
+        },
         "playerCommand": "ffplay",
         "playerArgs": [
             "-nodisp",
@@ -202,7 +233,9 @@
         "behaviorState": "/api/behavior/state",
         "behaviorTick": "/api/behavior/tick",
         "memoryProposals": "/api/memory/proposals",
-        "socialProposals": "/api/social/proposals"
+        "socialProposals": "/api/social/proposals",
+        "asrToken": "/api/asr/token",
+        "asrTranscript": "/asr/transcript"
     },
 
     "server": {

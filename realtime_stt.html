@@ -1,77 +1,157 @@
 <!DOCTYPE html>
-<html>
+<html lang="ja">
 <head>
   <meta charset="utf-8">
-  <title>Realtime STT</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Alice Realtime STT</title>
 </head>
 <body>
   <button id="startBtn">Start</button>
-  <button id="stopBtn">Stop</button>
+  <button id="stopBtn" disabled>Stop</button>
+  <p id="status">停止中</p>
   <pre id="output"></pre>
 
   <script type="module">
-    import { Scribe, RealtimeEvents } from "https://cdn.skypack.dev/@elevenlabs/client";
+    import { Scribe, RealtimeEvents, CommitStrategy } from "https://cdn.skypack.dev/@elevenlabs/client@1.15.1";
 
+    const injectedConfig = "__ALICE_ASR_CONFIG__";
+    const asrConfig = typeof injectedConfig === "object" ? injectedConfig : {
+      modelId: "scribe_v2_realtime",
+      languageCode: "ja",
+      commitStrategy: "vad",
+      vadSilenceThresholdSecs: 0.8,
+      minSpeechDurationMs: 250,
+    };
     let connection = null;
+    let sessionId = null;
+    let segmentNumber = 0;
+    let revision = 0;
     const output = document.getElementById("output");
+    const status = document.getElementById("status");
+    const startButton = document.getElementById("startBtn");
+    const stopButton = document.getElementById("stopBtn");
 
-    document.getElementById("startBtn").onclick = start;
-    document.getElementById("stopBtn").onclick = stop;
+    startButton.onclick = start;
+    stopButton.onclick = stop;
+
+    function safeId(prefix) {
+      return `${prefix}_${crypto.randomUUID()}`;
+    }
+
+    function beginSegment() {
+      segmentNumber += 1;
+      revision = 0;
+      return `segment_${segmentNumber}`;
+    }
+
+    let segmentId = beginSegment();
+
+    function transcriptEvent(kind, text, eventRevision, languageCode) {
+      const suffix = kind === "partial" ? `revision${eventRevision}` : "committed";
+      return {
+        event_id: `asr_${sessionId}_${segmentId}_${suffix}`,
+        session_id: sessionId,
+        segment_id: segmentId,
+        kind,
+        revision: eventRevision,
+        text,
+        observed_at: new Date().toISOString(),
+        ...(languageCode ? { language_code: languageCode } : {}),
+      };
+    }
+
+    async function postTranscript(event, { retries = 0 } = {}) {
+      let lastError;
+      for (let attempt = 0; attempt <= retries; attempt += 1) {
+        try {
+          const response = await fetch("/asr/transcript", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(event),
+          });
+          if (!response.ok) throw new Error(`Kernel returned HTTP ${response.status}`);
+          return await response.json();
+        } catch (error) {
+          lastError = error;
+          if (attempt < retries) await new Promise((resolve) => setTimeout(resolve, 250 * (2 ** attempt)));
+        }
+      }
+      throw lastError;
+    }
 
     async function start() {
-      console.log("start clicked");
+      if (connection) return;
+      status.textContent = "接続中";
+      startButton.disabled = true;
+      try {
+        const response = await fetch("/api/asr/token", { method: "POST" });
+        if (!response.ok) throw new Error(`Token request failed with HTTP ${response.status}`);
+        const { token, model_id: modelId } = await response.json();
 
-      // トークン取得
-      const res = await fetch("http://localhost:3000/scribe-token");
-      const { token } = await res.json();
-      console.log("token:", token);
+        sessionId = safeId("session");
+        segmentNumber = 0;
+        segmentId = beginSegment();
+        connection = Scribe.connect({
+          token,
+          modelId: modelId || asrConfig.modelId,
+          languageCode: asrConfig.languageCode,
+          commitStrategy: asrConfig.commitStrategy === "vad" ? CommitStrategy.VAD : CommitStrategy.MANUAL,
+          vadSilenceThresholdSecs: asrConfig.vadSilenceThresholdSecs,
+          minSpeechDurationMs: asrConfig.minSpeechDurationMs,
+          microphone: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+          },
+        });
 
-      // 接続
-      connection = Scribe.connect({
-        token,
-        modelId: "scribe_v2_realtime",
-        microphone: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-        },
-      });
-
-      // --- デバッグ ---
-      connection.on(RealtimeEvents.OPEN, () => {
-        console.log("WS OPEN");
-      });
-
-      connection.on(RealtimeEvents.ERROR, (e) => {
-        console.error("ERROR", e);
-      });
-
-      connection.on(RealtimeEvents.CLOSE, () => {
-        console.log("WS CLOSED");
-      });
-
-      // --- リアルタイム表示 ---
-      connection.on(RealtimeEvents.PARTIAL_TRANSCRIPT, (data) => {
-        console.log("PARTIAL:", data.text);
-
-        // 上書き表示
-        output.textContent = data.text;
-      });
-
-      // --- 確定 ---
-      connection.on(RealtimeEvents.COMMITTED_TRANSCRIPT, (data) => {
-        console.log("FINAL:", data.text);
-
-        // 改行して確定
-        output.textContent += "\n" + data.text;
-      });
+        connection.on(RealtimeEvents.OPEN, () => {
+          status.textContent = "音声入力中";
+          stopButton.disabled = false;
+        });
+        connection.on(RealtimeEvents.ERROR, () => {
+          status.textContent = "音声認識エラー";
+        });
+        connection.on(RealtimeEvents.CLOSE, () => {
+          connection = null;
+          status.textContent = "停止中";
+          startButton.disabled = false;
+          stopButton.disabled = true;
+        });
+        connection.on(RealtimeEvents.PARTIAL_TRANSCRIPT, (data) => {
+          revision += 1;
+          output.textContent = data.text;
+          const event = transcriptEvent("partial", data.text, revision, data.language_code);
+          postTranscript(event).catch(() => {
+            status.textContent = "部分認識の送信に失敗（認識は継続中）";
+          });
+        });
+        connection.on(RealtimeEvents.COMMITTED_TRANSCRIPT, (data) => {
+          const event = transcriptEvent("committed", data.text, revision, data.language_code);
+          output.textContent += `\n${data.text}`;
+          segmentId = beginSegment();
+          postTranscript(event, { retries: 3 })
+            .then((result) => {
+              status.textContent = result.status === "echo_suppressed" ? "自己音声を抑制" : "確定発話を送信済み";
+            })
+            .catch(() => {
+              status.textContent = "確定発話の送信に失敗";
+            });
+        });
+      } catch (error) {
+        connection = null;
+        status.textContent = error.message;
+        startButton.disabled = false;
+        stopButton.disabled = true;
+      }
     }
 
     function stop() {
-      if (connection) {
-        connection.close();
-        connection = null;
-      }
+      connection?.close();
+      connection = null;
+      status.textContent = "停止中";
+      startButton.disabled = false;
+      stopButton.disabled = true;
     }
   </script>
 </body>

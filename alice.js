@@ -1,6 +1,7 @@
 import puppeteer from "puppeteer-extra";
 import StealthPlugin from "puppeteer-extra-plugin-stealth";
 import { BskyAgent } from "@atproto/api";
+import { ElevenLabsClient } from "@elevenlabs/elevenlabs-js";
 import fetch from "node-fetch";
 import express from "express";
 import { spawn } from "child_process";
@@ -17,6 +18,11 @@ import { ActionGate } from "./src/behavior/action-gate.js";
 import { SocialStateStore } from "./src/social/social-state-store.js";
 import { TurnRegistry } from "./src/behavior/turn-registry.js";
 import { LlmResponseProtocol } from "./src/protocol/llm-response.js";
+import { AsrTranscriptService, AsrValidationError } from "./src/speech/asr-transcript.js";
+import { AsrTokenService } from "./src/speech/asr-token.js";
+import { TtsEchoGuard } from "./src/speech/echo-guard.js";
+import { ElevenLabsTtsProvider } from "./src/speech/elevenlabs-tts.js";
+import { TtsAdapter } from "./src/speech/tts-adapter.js";
 
 const config = JSON.parse(fs.readFileSync(new URL("./config.json", import.meta.url), "utf8"));
 
@@ -33,6 +39,7 @@ const SENSOR_UNITS = config.sensors.units;
 const TOUCH_SENSOR_BINDINGS = config.touch.sensorBindings;
 
 const TTS_ENABLED = config.tts.enabled;
+const ASR_ENABLED = config.asr.enabled;
 const ELEVENLABS_VOICE_ID = process.env.ELEVENLABS_VOICE_ID || config.tts.defaultVoiceId;
 const ELEVENLABS_MODEL_ID = process.env.ELEVENLABS_MODEL_ID || config.tts.defaultModelId;
 const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY;
@@ -40,7 +47,10 @@ const ELEVENLABS_OUTPUT_FORMAT = process.env.ELEVENLABS_OUTPUT_FORMAT || config.
 const BSKY_IDENTIFIER = process.env.BSKY_IDENTIFIER;
 const BSKY_PASSWORD = process.env.BSKY_PASSWORD;
 const repositoryDirectory = path.dirname(fileURLToPath(import.meta.url));
-const behaviorArchitecture = new BehaviorArchitecture({ config: config.behavior });
+const behaviorArchitecture = new BehaviorArchitecture({
+    config: config.behavior,
+    asrPartialTtlMs: config.asr.partialTtlMs,
+});
 const memoryStore = new MemoryStore({
     filePath: path.resolve(repositoryDirectory, config.memory.storagePath),
 });
@@ -72,6 +82,15 @@ const runtimeReady = Promise.all([memoryReady, socialReady, eventReady]).then(as
         if (observation.type === "action.intention") actionGate.restoreIntention(observation.payload);
         if (observation.type === "action.outcome") actionGate.restoreOutcome(observation.payload);
     }
+    const interruptedTts = behaviorArchitecture.reconcileInterruptedTts();
+    if (interruptedTts) {
+        const observation = behaviorArchitecture.observe(
+            interruptedTts,
+            { generateProposals: false },
+        ).observation;
+        socialStore.observe(observation);
+        await eventStore.append(observation, { force: true });
+    }
     for (const outcome of actionGate.reconcileInterrupted()) {
         const observation = behaviorArchitecture.observe({
             type: "action.outcome",
@@ -84,24 +103,23 @@ const runtimeReady = Promise.all([memoryReady, socialReady, eventReady]).then(as
     }
 });
 
-if (TTS_ENABLED && !ELEVENLABS_API_KEY) {
+if ((TTS_ENABLED || ASR_ENABLED) && !ELEVENLABS_API_KEY) {
     throw new Error("ELEVENLABS_API_KEY is required. Set it in .env.");
 }
 
 let latestSensor = {};
 let page = null;
-let ttsQueue = Promise.resolve();
 let chatOperationQueue = Promise.resolve();
 let blueskyAgent = null;
 let blueskyLoginPromise = null;
 const processedVisionEventIds = new Set();
 
-async function ingestObservation(input, { forcePersist = false } = {}) {
+async function ingestObservation(input, { forcePersist = false, persist = true } = {}) {
     await runtimeReady;
     const result = behaviorArchitecture.observe(input);
     socialStore.observe(result.observation);
-    await eventStore.append(result.observation, { force: forcePersist });
-    broadcastDashboard("behavior", behaviorArchitecture.snapshot());
+    if (persist) await eventStore.append(result.observation, { force: forcePersist });
+    broadcastDashboard("behavior", dashboardBehaviorSnapshot());
     return result;
 }
 
@@ -122,13 +140,18 @@ async function buildCognitiveContext(input, { consumeProposals = true, minimumPr
 
 async function sendObservationToChatGPT(input, options) {
     const context = await buildCognitiveContext(input, options);
+    await dispatchCognitiveContext(context);
+    return context;
+}
+
+async function dispatchCognitiveContext(context, { releaseLeaseOnFailure = true } = {}) {
     turnRegistry.register(context);
     try {
         await sendJsonToChatGPT(context);
         behaviorArchitecture.acknowledgeProposalLease(context.turn_id);
     } catch (error) {
         turnRegistry.remove(context.turn_id);
-        behaviorArchitecture.releaseProposalLease(context.turn_id);
+        if (releaseLeaseOnFailure) behaviorArchitecture.releaseProposalLease(context.turn_id);
         throw error;
     }
     return context;
@@ -156,6 +179,11 @@ const serviceState = {
         label: "Voice output",
         detail: TTS_ENABLED ? "Ready" : "Disabled in config",
     },
+    asr: {
+        status: ASR_ENABLED ? "idle" : "disabled",
+        label: "Voice input",
+        detail: ASR_ENABLED ? "Ready for client connection" : "Disabled in config",
+    },
 };
 
 const endpointState = new Map([
@@ -168,6 +196,8 @@ const endpointState = new Map([
     [config.routes.behaviorTick, { method: "POST", label: "自発行動ティック", calls: 0, errors: 0 }],
     [config.routes.memoryProposals, { method: "GET", label: "記憶候補一覧", calls: 0, errors: 0, trackActivity: false }],
     [config.routes.socialProposals, { method: "GET", label: "社会状態候補一覧", calls: 0, errors: 0, trackActivity: false }],
+    [config.routes.asrToken, { method: "POST", label: "ASR一時トークン", calls: 0, errors: 0 }],
+    [config.routes.asrTranscript, { method: "POST", label: "ASR文字起こし", calls: 0, errors: 0 }],
     ["/api/dashboard/status", { method: "GET", label: "監視スナップショット", calls: 0, errors: 0, trackActivity: false }],
     ["/api/dashboard/events", { method: "GET", label: "リアルタイム監視", calls: 0, errors: 0, trackActivity: false }],
     ["/api/dashboard/actions", { method: "POST", label: "デバイス手動操作", calls: 0, errors: 0 }],
@@ -248,6 +278,25 @@ function markEndpointRequest(route, statusCode, durationMs, payload) {
     });
 }
 
+function dashboardBehaviorSnapshot() {
+    const snapshot = behaviorArchitecture.snapshot();
+    const partial = snapshot.state?.interaction?.asr_partial;
+    if (partial?.value?.text) {
+        partial.value = {
+            ...partial.value,
+            text_length: partial.value.text.length,
+        };
+        delete partial.value.text;
+    }
+    return snapshot;
+}
+
+function dashboardEndpointPayload(route, payload) {
+    if (route !== config.routes.asrTranscript || !isPlainObject(payload)) return payload;
+    const { text, ...safe } = payload;
+    return { ...safe, text_length: typeof text === "string" ? text.length : 0 };
+}
+
 function publicSensorState() {
     return {
         temperature: readSensorField("temperature") ?? null,
@@ -280,7 +329,7 @@ function publicDashboardState() {
         services,
         endpoints,
         sensors: publicSensorState(),
-        behavior: behaviorArchitecture.snapshot(),
+        behavior: dashboardBehaviorSnapshot(),
         memory: {
             pendingProposalCount: memoryStore.list({ status: "pending" }).length,
             acceptedCount: memoryStore.list({ status: "accepted" }).length,
@@ -295,6 +344,7 @@ function publicDashboardState() {
         activity: recentActivity.slice(0, 60),
         capabilities: {
             ttsEnabled: TTS_ENABLED,
+            asrEnabled: ASR_ENABLED,
             actions: ["led_change", "tear"],
         },
     };
@@ -303,92 +353,108 @@ function publicDashboardState() {
 /* ---------------------------
    ElevenLabs TTS
 --------------------------- */
-function streamToFfplay(body) {
-    return new Promise(async (resolve, reject) => {
-        const ffplay = spawn(config.tts.playerCommand, config.tts.playerArgs);
-
-        ffplay.on("error", reject);
-        ffplay.on("close", (code) => {
-            if (code === 0) {
-                resolve();
-            } else {
-                reject(new Error(`ffplay exited with code ${code}`));
-            }
+const echoGuard = new TtsEchoGuard({ echoGuardMs: config.tts.echoGuardMs });
+const ttsProvider = new ElevenLabsTtsProvider({
+    config: {
+        ...config.tts,
+        defaultVoiceId: ELEVENLABS_VOICE_ID,
+        defaultModelId: ELEVENLABS_MODEL_ID,
+        defaultOutputFormat: ELEVENLABS_OUTPUT_FORMAT,
+    },
+    apiKey: ELEVENLABS_API_KEY,
+    fetchImpl: fetch,
+    spawnImpl: spawn,
+});
+const ttsAdapter = new TtsAdapter({
+    enabled: TTS_ENABLED,
+    provider: ttsProvider,
+    validEmotions: config.audit.validEmotions,
+    intensityMin: config.audit.intensityMin,
+    intensityMax: config.audit.intensityMax,
+    echoGuard,
+    onObservation: async (input) => {
+        await ingestObservation(input, { forcePersist: true });
+        const status = input.payload.status;
+        updateService("tts", {
+            status: status === "failed" ? "degraded" : status === "skipped" ? "disabled" : status === "completed" ? "online" : "busy",
+            detail: status === "failed" ? input.payload.error : `Speech output ${status}`,
         });
-
-        try {
-            if (typeof body.getReader === "function") {
-                const reader = body.getReader();
-                while (true) {
-                    const { done, value } = await reader.read();
-                    if (done) break;
-                    if (!ffplay.stdin.write(Buffer.from(value))) {
-                        await new Promise((drainResolve) => ffplay.stdin.once("drain", drainResolve));
-                    }
-                }
-            } else {
-                for await (const chunk of body) {
-                    if (!ffplay.stdin.write(Buffer.from(chunk))) {
-                        await new Promise((drainResolve) => ffplay.stdin.once("drain", drainResolve));
-                    }
-                }
-            }
-
-            ffplay.stdin.end();
-        } catch (err) {
-            ffplay.stdin.destroy();
-            reject(err);
-        }
-    });
-}
-
-async function speakTextNow(text) {
-    const trimmedText = text.trim();
-    if (!trimmedText) return;
-
-    const url = `${config.tts.baseUrl}/${ELEVENLABS_VOICE_ID}/stream?output_format=${ELEVENLABS_OUTPUT_FORMAT}`;
-    const res = await fetch(url, {
-        method: "POST",
-        headers: {
-            "xi-api-key": ELEVENLABS_API_KEY,
-            "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-            text: trimmedText,
-            model_id: ELEVENLABS_MODEL_ID,
-        }),
-    });
-
-    if (!res.ok || !res.body) {
-        const body = await res.text();
-        throw new Error(`TTS failed: ${res.status} ${body}`);
-    }
-
-    await streamToFfplay(res.body);
-}
-
-function speakTTS(text) {
-    if (!TTS_ENABLED) {
-        console.log("TTS skipped: disabled");
-        return Promise.resolve();
-    }
-
-    updateService("tts", { status: "busy", detail: "Generating speech" });
-    ttsQueue = ttsQueue
-        .catch((err) => {
-            console.error("previous TTS failed:", err.message);
-        })
-        .then(() => speakTextNow(text))
-        .then(() => {
-            updateService("tts", { status: "online", detail: "Last speech completed" });
-        })
-        .catch((err) => {
-            updateService("tts", { status: "degraded", detail: err.message });
-            throw err;
+        recordActivity({
+            category: "communication",
+            status: status === "failed" ? "error" : status === "skipped" ? "skipped" : "success",
+            title: `TTS ${status}`,
+            summary: `${input.payload.emotion} · intensity ${input.payload.intensity}`,
+            service: "tts",
+            payload: input.payload,
         });
+    },
+});
 
-    return ttsQueue;
+function speakTTS(request) {
+    return ttsAdapter.speak(request);
 }
+
+const elevenlabsClient = ELEVENLABS_API_KEY
+    ? new ElevenLabsClient({ apiKey: ELEVENLABS_API_KEY })
+    : null;
+const asrTokenService = new AsrTokenService({
+    enabled: ASR_ENABLED,
+    provider: config.asr.provider,
+    modelId: config.asr.modelId,
+    loopbackOnly: config.asr.tokenRouteLoopbackOnly,
+    apiKey: ELEVENLABS_API_KEY,
+    client: elevenlabsClient,
+});
+const asrTranscriptService = new AsrTranscriptService({
+    config: config.asr,
+    ingestPartial: async (input, options) => {
+        await ingestObservation(input, options);
+        updateService("asr", { status: "online", detail: "Receiving partial speech" });
+        recordActivity({
+            category: "communication",
+            status: "success",
+            title: "ASR partial updated",
+            summary: `Session ${input.payload.session_id} · revision ${input.payload.revision}`,
+            direction: "inbound",
+            service: "asr",
+            payload: {
+                session_id: input.payload.session_id,
+                segment_id: input.payload.segment_id,
+                revision: input.payload.revision,
+                text_length: input.payload.text.length,
+            },
+        });
+    },
+    prepareCommitted: (input) => buildCognitiveContext(input),
+    dispatchCommitted: (context) => dispatchCognitiveContext(context, { releaseLeaseOnFailure: false }),
+    hasPersistedId: (eventId) => eventStore.has(eventId),
+    echoGuard,
+    onEchoSuppressed: async ({ event, echo, receivedAt }) => {
+        await ingestObservation({
+            id: event.event_id,
+            type: "speech.echo_suppressed",
+            source: "kernel_echo_guard",
+            observed_at: receivedAt,
+            payload: {
+                asr_event_id: event.event_id,
+                session_id: event.session_id,
+                segment_id: event.segment_id,
+                matched_turn_id: echo.turnId,
+                method: echo.method,
+                similarity: Math.round(echo.similarity * 1000) / 1000,
+            },
+        }, { forcePersist: true });
+        recordActivity({
+            category: "communication",
+            status: "skipped",
+            title: "ASR echo suppressed",
+            summary: `Matched recent TTS by ${echo.method}`,
+            direction: "inbound",
+            service: "asr",
+            payload: { event_id: event.event_id, similarity: echo.similarity },
+        });
+    },
+});
 
 /* ---------------------------
    BME280 polling
@@ -1198,7 +1264,12 @@ async function executeAuditedPayload(payload, { context } = {}) {
         });
         const speechGate = actionGate.evaluateSpeech(context);
         if (speechGate.allowed) {
-            speakTTS(payload.speech).catch((err) => {
+            speakTTS({
+                turnId: payload.turn_id,
+                text: payload.speech,
+                emotion: payload.emotion,
+                intensity: payload.intensity,
+            }).catch((err) => {
                 console.error("TTS failed:", err.message);
             });
         } else {
@@ -1267,7 +1338,12 @@ app.use((req, res, next) => {
 
     const startedAt = Date.now();
     res.on("finish", () => {
-        markEndpointRequest(req.path, res.statusCode, Date.now() - startedAt, req.body);
+        markEndpointRequest(
+            req.path,
+            res.statusCode,
+            Date.now() - startedAt,
+            dashboardEndpointPayload(req.path, req.body),
+        );
     });
     return next();
 });
@@ -1280,6 +1356,58 @@ app.use("/dashboard", express.static(dashboardDirectory, {
 
 app.get("/", (req, res) => {
     res.redirect("/dashboard/");
+});
+
+app.get(["/asr", "/asr/"], async (req, res) => {
+    try {
+        const clientPath = path.join(repositoryDirectory, "realtime_stt.html");
+        const template = await fs.promises.readFile(clientPath, "utf8");
+        const publicConfig = JSON.stringify({
+            modelId: config.asr.modelId,
+            languageCode: config.asr.languageCode,
+            commitStrategy: config.asr.commitStrategy,
+            vadSilenceThresholdSecs: config.asr.vadSilenceThresholdSecs,
+            minSpeechDurationMs: config.asr.minSpeechDurationMs,
+        }).replace(/</gu, "\\u003c");
+        res.type("html").set("Cache-Control", "no-store").send(
+            template.replace('"__ALICE_ASR_CONFIG__"', publicConfig),
+        );
+    } catch {
+        res.status(500).send("ASR client is unavailable");
+    }
+});
+
+app.post(config.routes.asrToken, async (req, res) => {
+    try {
+        const payload = await asrTokenService.issue(req.socket.remoteAddress);
+        updateService("asr", { status: "online", detail: "Client token issued" });
+        return res.json(payload);
+    } catch (error) {
+        const statusCode = error.statusCode ?? 502;
+        updateService("asr", {
+            status: statusCode === 403 ? "online" : statusCode === 503 ? "disabled" : "degraded",
+            detail: error.message,
+        });
+        return res.status(statusCode).json({ error: error.message });
+    }
+});
+
+app.post(config.routes.asrTranscript, async (req, res) => {
+    if (!ASR_ENABLED) return res.status(503).json({ error: "ASR is disabled" });
+    try {
+        await runtimeReady;
+        const result = await asrTranscriptService.handle(req.body);
+        updateService("asr", {
+            status: "online",
+            detail: result.status === "accepted" ? `${result.kind} transcript accepted` : result.status,
+        });
+        return res.json(result);
+    } catch (error) {
+        if (error instanceof AsrValidationError) return res.status(400).json({ error: error.message });
+        updateService("asr", { status: "degraded", detail: "Transcript delivery failed" });
+        console.error("ASR transcript delivery failed:", error.message);
+        return res.status(503).json({ error: "ChatGPT delivery failed" });
+    }
 });
 
 app.get("/api/dashboard/status", (req, res) => {

@@ -19,6 +19,9 @@
 - タッチセンサー入力を「撫で始め／撫で終わり」の意味イベントへ変換
 - 明示的に許可された文章をBlueskyへ投稿
 - HTTP API経由でユーザー入力を会話へ追加
+- ElevenLabs Scribe Realtimeの部分認識を一時状態として保持し、確定認識だけを会話へ追加
+- LLMが指定した感情・強度を固定タグと範囲内の音声設定へ変換してTTSを再生
+- TTS再生結果の状態化と、自己音声がASRへ戻る基本的なフィードバック抑制
 - 生の観測を時刻・信頼度・由来付きの共通エンベロープへ正規化
 - 観測から継続状態を保持し、鮮度切れを`stale`、未観測を`unknown`として区別
 - 在室、温熱、照明、発話、接触を決定論的な世界モデルへ変換
@@ -70,7 +73,7 @@ ChatGPTとの通信には公式APIではなく、リモートデバッグを有�
 - npm
 - Google ChromeまたはChromium
 - ログイン済みのChatGPTアカウント
-- ElevenLabs APIキー
+- ElevenLabs APIキー（ASRまたはTTSを有効にする場合）
 
 機能に応じて、次の外部要素も必要です。
 
@@ -109,7 +112,7 @@ BSKY_PASSWORD=your_app_password
 
 `.env` はGitの追跡対象外です。認証情報をコミットしないでください。
 
-`ELEVENLABS_API_KEY`は`tts.enabled`を`true`にする場合だけ必須です。
+`ELEVENLABS_API_KEY`は`asr.enabled`または`tts.enabled`を`true`にする場合だけ必須です。
 
 ### 3. 接続先を設定
 
@@ -121,6 +124,7 @@ BSKY_PASSWORD=your_app_password
 | `actions` | 涙モーター、LED、Blueskyの接続先と制約 |
 | `sensors` | BME280／CdSのURL、取得間隔、単位 |
 | `touch` | センサーIDと身体部位の対応 |
+| `asr` | Scribeモデル、VAD、部分認識TTL、入力長、トークン公開範囲 |
 | `tts` | 有効・無効、ElevenLabs、`ffplay` の設定 |
 | `vision` | カメラスナップショットURL、画像制限、タイムアウト |
 | `faceMemory` | 顔登録APIと名前の制約 |
@@ -223,6 +227,58 @@ Kernelは次の流れで処理します。
   "text": "気分はどう？"
 }
 ```
+
+### 音声入力（Phase 1）
+
+音声入出力は既定で無効です。`.env`に`ELEVENLABS_API_KEY`を設定し、
+`config.json`の`asr.enabled`を`true`にしてKernelを再起動した後、次を開きます。
+
+```text
+http://localhost:3000/asr
+```
+
+このページはKernelから同一オリジンで配信され、`POST /api/asr/token`で
+単回使用のScribeトークンを取得します。APIキーと単回使用トークンはログや
+ダッシュボードへ記録しません。既定ではトークン取得はループバック接続だけに
+制限されます。
+
+Scribeの部分認識は`POST /asr/transcript`を通じて一時状態へ入りますが、
+ChatGPTへの入力にも永続イベントログにも入りません。VADで確定した認識だけが
+`interaction.user_input`として既存の会話経路を一度通ります。確定イベントの
+再送は同じ`event_id`を使うため、安全に重複排除されます。
+
+代表的な確定イベント:
+
+```json
+{
+  "event_id": "asr_session123_segment7_committed",
+  "session_id": "session123",
+  "segment_id": "segment7",
+  "kind": "committed",
+  "revision": 3,
+  "text": "今日はちょっと寒いね",
+  "observed_at": "2026-09-11T12:00:01.000Z",
+  "language_code": "ja"
+}
+```
+
+### 感情付き音声出力（Phase 1）
+
+`tts.enabled`を`true`にすると、監査済みの`speech`、`emotion`、`intensity`が
+provider-neutralなTTSキューへ渡ります。ElevenLabs実装では設定済みの固定感情
+タグを別のrendered textへ付加し、強度から`stability`を0〜1の範囲で線形補間
+します。既定の`eleven_v3`では`similarity_boost`、`style`、
+`use_speaker_boost`を送信しません。元の`speech`は変更しません。
+
+再生状態は`requested`、`started`、`completed`、`failed`、`skipped`、`interrupted`として
+区別されます。`started`は音声データをプレイヤーへ渡し始めた時点、`completed`は
+`ffplay`が正常終了した時点です。TTS無効時は成功ではなく`tts_disabled`による
+`skipped`になります。`started`のままKernelが再起動した場合は、起動時に
+`kernel_restart`による`interrupted`としてイベント履歴へ記録します。
+
+再生中および再生完了直後に、直近のTTS文と十分似たASR確定文が届いた場合は
+自己音声として抑制します。異なる人間の発話は保持します。Phase 1は現在の再生を
+停止するbarge-inには対応していません。
 
 ### `POST /touch_sensor_input`
 

@@ -1,35 +1,6 @@
 {
-    "browser": {
-        "chatInputSelector": "textarea, div[contenteditable=\"true\"]",
-        "assistantOutputSelector": ".markdown.prose",
-        "sendButtonSelector": "button[data-testid=\"send-button\"]",
-        "enabledSendButtonSelector": "button[data-testid=\"send-button\"]:not([disabled])",
-        "imageUploadSelector": "input[data-testid=\"upload-photos-input\"]",
-        "remoteDebuggingUrl": "http://127.0.0.1:9222",
-        "chatgptUrl": "https://chatgpt.com/",
-        "existingPageUrlIncludes": ["chatgpt.com", "chat.openai.com"],
-        "inputTimeoutMs": 60000,
-        "typeDelayMs": 0,
-        "outputPollIntervalMs": 300,
-        "chromeConnectErrorMessage": "Failed to connect to Chrome. Start Chrome with: chrome.exe --remote-debugging-port=9222 --user-data-dir=\"C:\\chrome-debug-profile\""
-    },
-
     "audit": {
-        "validTopLevelFields": ["turn_id", "speech", "emotion", "intensity", "actions", "requests", "memory_proposals", "social_proposals"],
-        "maxPendingTurns": 32,
-        "pendingTurnTtlMs": 300000,
-        "validEmotions": [
-            "neutral",
-            "happy",
-            "calm",
-            "sad",
-            "angry",
-            "surprised",
-            "fear",
-            "thinking"
-        ],
-        "intensityMin": 0.0,
-        "intensityMax": 1.0
+        "validTopLevelFields": ["turn_id", "result", "actions", "requests", "memory_extraction", "memory_verification"]
     },
 
     "actions": {
@@ -107,7 +78,68 @@
 
     "memory": {
         "storagePath": "./data/runtime/memory.json",
-        "retrievalLimit": 5
+        "retrievalLimit": 5,
+        "extraction": {
+            "enabled": true,
+            "intervalSeconds": 60,
+            "flushOnSessionEnd": true,
+            "retryIntervalSeconds": 30,
+            "maxConsecutiveFailures": 3,
+            "stableSilenceMs": 2000,
+            "maxBatchBytes": 16000,
+            "maxBatchGroups": 16,
+            "summaryBudgetTokens": 1600
+        }
+    },
+
+    "responses": {
+        "url": "https://api.openai.com/v1/responses",
+        "model": "gpt-6-luna",
+        "reasoningEffort": "low",
+        "timeoutMs": 30000,
+        "maxOutputTokens": 4096,
+        "webSearchEnabled": true
+    },
+
+    "live": {
+        "enabled": true,
+        "model": "gpt-live-1",
+        "voice": "harema",
+        "apiBaseUrl": "https://api.openai.com/v1/live",
+        "socketBaseUrl": "wss://api.openai.com/v1/live",
+        "instructionsPath": "./prompts/live-conversation.md",
+        "personaPath": "../kokomi-persona/kokomi_origin.md",
+        "conversationPath": "./data/runtime/live-conversations.jsonl",
+        "checkpointPath": "./data/runtime/live-memory-checkpoint.json",
+        "allowedOrigins": ["http://localhost:3000", "http://127.0.0.1:3000", "http://[::1]:3000"],
+        "requestTimeoutMs": 15000,
+        "closeTimeoutMs": 5000,
+        "iceTimeoutMs": 10000,
+        "heartbeatIntervalMs": 5000,
+        "heartbeatTimeoutMs": 20000,
+        "silenceWarningSeconds": 60,
+        "silenceWarningRepeatSeconds": 60,
+        "silenceAudioLevel": 0.02,
+        "audioStatsIntervalMs": 1000,
+        "stateSyncIntervalMs": 2000,
+        "maxEventBytes": 1048576,
+        "maxPendingAppends": 32,
+        "initialContextBudgetTokens": 6000,
+        "initialHistoryMessages": 24,
+        "updateBudgetTokens": 450,
+        "retrievalLimit": 5,
+        "retrievalHistoryMessages": 4,
+        "backendHistoryMessages": 12,
+        "backendInputBudgetTokens": 8000,
+        "maxBackendSteps": 4,
+        "delegationQuietMs": 1200,
+        "delegationContextTimeoutMs": 15000,
+        "delegationTtlMs": 300000,
+        "intoxicationSignal": "intoxication",
+        "quantization": {
+            "lightIntoxication": 0.2,
+            "moderateIntoxication": 0.6
+        }
     },
 
     "social": {
@@ -156,97 +188,11 @@
         "endedAction": "petting_ended"
     },
 
-    "asr": {
-        "enabled": true,
-        "provider": "elevenlabs_scribe",
-        "modelId": "scribe_v2_realtime",
-        "languageCode": "ja",
-        "commitStrategy": "vad",
-        "vadSilenceThresholdSecs": 0.8,
-        "minSpeechDurationMs": 250,
-        "partialTtlMs": 2000,
-        "maxTextLength": 2000,
-        "tokenRouteLoopbackOnly": true,
-        "captureAckTimeoutMs": 650,
-        "resumeGuardMs": 400
-    },
-
-    "tts": {
-        "enabled": true,
-        "provider": "elevenlabs",
-        "baseUrl": "https://api.elevenlabs.io/v1/text-to-speech",
-        "defaultVoiceId": "JgWCVquTJEvtfo5gWQkx",
-        "defaultModelId": "eleven_v3",
-        "defaultOutputFormat": "mp3_44100_128",
-        "similarityBoost": 0.75,
-        "speakerBoost": true,
-        "stabilityAtIntensityZero": 0.65,
-        "stabilityAtIntensityOne": 0.35,
-        "styleAtIntensityZero": 0.0,
-        "styleAtIntensityOne": 0.35,
-        "echoGuardMs": 1000,
-        "emotionTags": {
-            "neutral": null,
-            "happy": "[happily]",
-            "calm": "[calmly]",
-            "sad": "[sad]",
-            "angry": "[angry]",
-            "surprised": "[surprised]",
-            "fear": "[worried]",
-            "thinking": "[thoughtfully]"
-        },
-        "playerCommand": "ffplay",
-        "playerArgs": [
-            "-nodisp",
-            "-autoexit",
-            "-loglevel",
-            "quiet",
-            "-"
-        ]
-    },
-
-    "filler": {
-        "enabled": true,
-        "armed": true,
-        "manifestPath": "data/runtime/fillers/manifest.json",
-        "experimentSeed": "kokomi-fillers-ja-v1",
-        "maxClipDurationMs": 1800,
-        "globalCooldownMs": 4000,
-        "thinking": {
-            "enabled": true,
-            "delayMs": 1000,
-            "maxPerTurn": 1
-        },
-        "listening": {
-            "enabled": true,
-            "armed": false,
-            "minimumSpeechMs": 1800,
-            "minimumPartialCharacters": 8,
-            "cooldownMs": 6000,
-            "maxPerSegment": 1
-        },
-        "playerCommand": "ffplay",
-        "playerArgs": [
-            "-nodisp",
-            "-autoexit",
-            "-loglevel",
-            "quiet"
-        ]
-    },
-
     "vision": {
         "snapshotUrl": "http://localhost:5000/snapshot",
         "snapshotTimeoutMs": 10000,
-        "attachmentTimeoutMs": 60000,
-        "tempFileRetentionMs": 60000,
         "maxImageBytes": 10485760,
-        "generateUrl": "http://localhost:11434/api/generate",
-        "model": "llava",
-        "stream": false,
-        "defaultQuery": "describe the scene",
-        "task": "describe_scene",
-        "maxWords": 50,
-        "instructionTemplate": "Describe the scene in English in 1-2 sentences, maximum {maxWords} words. Focus only on important objects, people, and actions. Do not repeat details.\n"
+        "task": "describe_scene"
     },
 
     "faceMemory": {
@@ -264,11 +210,7 @@
         "behaviorState": "/api/behavior/state",
         "behaviorTick": "/api/behavior/tick",
         "memoryProposals": "/api/memory/proposals",
-        "socialProposals": "/api/social/proposals",
-        "asrToken": "/api/asr/token",
-        "asrTranscript": "/asr/transcript",
-        "asrControl": "/api/asr/control",
-        "asrControlAck": "/api/asr/control/ack"
+        "socialProposals": "/api/social/proposals"
     },
 
     "server": {

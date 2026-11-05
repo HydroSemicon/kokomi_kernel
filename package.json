@@ -2,24 +2,16 @@
   "name": "chatgpt_interface",
   "version": "1.0.0",
   "type": "module",
-  "main": "server.js",
+  "main": "alice.js",
   "scripts": {
+    "start": "node alice.js",
     "test": "node --test",
-    "generate:fillers": "node archives/tools/generate-fillers.js"
+    "memory:list": "node tools/memory-list.js"
   },
   "dependencies": {
     "@atproto/api": "^0.19.13",
-    "@elevenlabs/elevenlabs-js": "^2.45.0",
-    "cors": "^2.8.6",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
-    "node-fetch": "^3.3.2",
-    "node-record-lpcm16": "^1.0.1",
-    "play-sound": "^1.1.6",
-    "puppeteer": "^23.0.0",
-    "puppeteer-extra": "^3.3.6",
-    "puppeteer-extra-plugin-stealth": "^2.11.2",
-    "puppeteer-real-browser": "^1.4.4",
     "ws": "^8.20.0"
   }
 }

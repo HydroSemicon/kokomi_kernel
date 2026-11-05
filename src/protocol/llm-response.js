@@ -1,5 +1,6 @@
 import { validateMemoryProposals } from "../memory/memory-store.js";
 import { validateSocialProposals } from "../social/social-state-store.js";
+import { validateExtraction, validateVerification } from "../live/memory-extractor.js";
 
 function isPlainObject(value) {
     return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -18,7 +19,6 @@ export class LlmResponseProtocol {
     constructor(config) {
         this.config = config;
         this.validTopLevelFields = new Set(config.audit.validTopLevelFields);
-        this.validEmotions = new Set(config.audit.validEmotions);
     }
 
     validateActions(actions) {
@@ -108,12 +108,18 @@ export class LlmResponseProtocol {
                 }
                 continue;
             }
+            if (request.type === "web_search" && this.config.responses?.webSearchEnabled) {
+                if (!isPlainObject(request.params) || !hasExactlyKeys(request.params, ["query"])
+                    || typeof request.params.query !== "string" || !request.params.query.trim()
+                    || request.params.query.length > 500) return "web_search requires a query of 1 to 500 characters";
+                continue;
+            }
             return `unknown request type: ${request.type}`;
         }
         return null;
     }
 
-    audit(payload) {
+    audit(payload, { task = null } = {}) {
         if (!isPlainObject(payload)) return { ok: false, reason: "payload must be a JSON object" };
         for (const field of Object.keys(payload)) {
             if (!this.validTopLevelFields.has(field)) return { ok: false, reason: `unknown top-level field: ${field}` };
@@ -121,8 +127,34 @@ export class LlmResponseProtocol {
         if (typeof payload.turn_id !== "string" || !/^[A-Za-z0-9_.:-]{1,128}$/u.test(payload.turn_id)) {
             return { ok: false, reason: "turn_id must match a pending cognitive context" };
         }
-        const speechError = this.#validateSpeech(payload);
-        if (speechError) return { ok: false, reason: speechError };
+        if (task === "live_vision") {
+            return hasExactlyKeys(payload, ["turn_id", "result"]) && typeof payload.result === "string"
+                && Boolean(payload.result.trim()) && payload.result.length <= 2000
+                ? { ok: true, payload } : { ok: false, reason: "vision must return only a bounded description" };
+        }
+        if (task === "live_memory") {
+            if (!hasExactlyKeys(payload, ["turn_id", "memory_extraction"])) {
+                return { ok: false, reason: "memory extraction cannot contain speech, actions, or requests" };
+            }
+            const error = validateExtraction(payload.memory_extraction);
+            return error ? { ok: false, reason: error } : { ok: true, payload };
+        }
+        if (task === "live_memory_review") {
+            if (!hasExactlyKeys(payload, ["turn_id", "memory_verification"])) {
+                return { ok: false, reason: "memory verification cannot contain other outputs" };
+            }
+            const error = validateVerification(payload.memory_verification);
+            return error ? { ok: false, reason: error } : { ok: true, payload };
+        }
+        if ("memory_verification" in payload) return { ok: false, reason: "unexpected memory verification" };
+        if ("memory_extraction" in payload) return { ok: false, reason: "unexpected memory extraction" };
+        if (task === "live_control" && !hasOnlyKeys(payload, ["turn_id", "result", "actions", "requests"])) {
+            return { ok: false, reason: "live_control cannot contain speech or memory/social proposals" };
+        }
+        if ("result" in payload && (task !== "live_control" || typeof payload.result !== "string"
+            || !payload.result.trim() || payload.result.length > 2000)) {
+            return { ok: false, reason: "result requires a live_control task and 1 to 2000 characters" };
+        }
         if ("actions" in payload) {
             const error = this.validateActions(payload.actions);
             if (error) return { ok: false, reason: error };
@@ -130,6 +162,10 @@ export class LlmResponseProtocol {
         if ("requests" in payload) {
             const error = this.validateRequests(payload.requests);
             if (error) return { ok: false, reason: error };
+            if (payload.requests.some((request) => request?.type === "web_search")
+                && (payload.requests.length !== 1 || payload.actions?.length || payload.result)) {
+                return { ok: false, reason: "web_search must be the only requested operation" };
+            }
         }
         if ("memory_proposals" in payload) {
             const error = validateMemoryProposals(payload.memory_proposals);
@@ -139,28 +175,11 @@ export class LlmResponseProtocol {
             const error = validateSocialProposals(payload.social_proposals);
             if (error) return { ok: false, reason: error };
         }
-        const effective = Boolean(payload.speech?.trim())
+        const effective = Boolean(payload.result?.trim())
             || (Array.isArray(payload.actions) && payload.actions.length > 0)
             || (Array.isArray(payload.requests) && payload.requests.length > 0);
         return effective
             ? { ok: true, payload }
-            : { ok: false, reason: "payload must contain an effective speech, action, or request" };
-    }
-
-    #validateSpeech(payload) {
-        const hasSpeech = Object.hasOwn(payload, "speech");
-        const hasEmotion = Object.hasOwn(payload, "emotion");
-        const hasIntensity = Object.hasOwn(payload, "intensity");
-        if (!hasSpeech) return hasEmotion || hasIntensity ? "emotion and intensity must not exist without speech" : null;
-        if (!hasEmotion || !hasIntensity) return "speech requires emotion and intensity";
-        if (typeof payload.speech !== "string" || !payload.speech.trim() || payload.speech.length > 2000) {
-            return "speech must be a non-empty string of at most 2000 characters";
-        }
-        if (!this.validEmotions.has(payload.emotion)) return "emotion is invalid";
-        if (typeof payload.intensity !== "number" || !Number.isFinite(payload.intensity)) return "intensity must be a finite number";
-        if (payload.intensity < this.config.audit.intensityMin || payload.intensity > this.config.audit.intensityMax) {
-            return `intensity must be from ${this.config.audit.intensityMin.toFixed(1)} to ${this.config.audit.intensityMax.toFixed(1)}`;
-        }
-        return null;
+            : { ok: false, reason: "payload must contain an effective result, action, or request" };
     }
 }

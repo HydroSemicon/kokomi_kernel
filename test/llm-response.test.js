@@ -9,11 +9,9 @@ const protocol = new LlmResponseProtocol(config);
 test("LLM protocol requires a correlated turn and effective output", () => {
     assert.equal(protocol.audit({
         turn_id: "obs_1",
-        speech: "こんにちは。",
-        emotion: "calm",
-        intensity: 0.3,
-    }).ok, true);
-    assert.match(protocol.audit({ speech: "こんにちは。", emotion: "calm", intensity: 0.3 }).reason, /turn_id/u);
+        result: "こんにちは。",
+    }, { task: "live_control" }).ok, true);
+    assert.match(protocol.audit({ result: "こんにちは。" }).reason, /turn_id/u);
     assert.match(protocol.audit({ turn_id: "obs_1", actions: [] }).reason, /effective/u);
 });
 
@@ -37,4 +35,19 @@ test("LLM protocol enforces the one-action bottleneck before execution", () => {
     const result = protocol.audit({ turn_id: "obs_1", actions: [action, action] });
     assert.equal(result.ok, false);
     assert.match(result.reason, /at most 1/u);
+});
+
+test("public web search cannot be combined with control or other requests", () => {
+    const options = { task: "live_control" };
+    const lookup = { turn_id: "obs_1", requests: [{ type: "web_search", params: { query: "東京タワーの開業年" } }] };
+    assert.equal(protocol.audit(lookup, options).ok, true);
+    assert.match(protocol.audit({ ...lookup, actions: [{ type: "led_change", params: { color: "#FFFFFF" } }] }, options).reason, /only/u);
+    assert.match(protocol.audit({ ...lookup, requests: [...lookup.requests, "temperature"] }, options).reason, /only/u);
+});
+
+test("read-only vision output cannot carry an actuator action", () => {
+    const options = { task: "live_vision" };
+    const description = { turn_id: "vision_1", result: "マグカップがあります。" };
+    assert.equal(protocol.audit(description, options).ok, true);
+    assert.equal(protocol.audit({ ...description, actions: [{ type: "led_change", params: { color: "#FFFFFF" } }] }, options).ok, false);
 });

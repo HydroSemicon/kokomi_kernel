@@ -18,6 +18,7 @@
             <nav class="nav-list">
                 <a class="nav-link active" href="#overview"><span aria-hidden="true">⌂</span>概要</a>
                 <a class="nav-link" href="#cognition"><span aria-hidden="true">◎</span>認知状態</a>
+                <a class="nav-link" href="#memories"><span aria-hidden="true">◇</span>長期記憶</a>
                 <a class="nav-link" href="#communications"><span aria-hidden="true">⇄</span>通信</a>
                 <a class="nav-link" href="#endpoints"><span aria-hidden="true">⌁</span>APIエンドポイント</a>
                 <a class="nav-link" href="#controls"><span aria-hidden="true">◫</span>デバイス操作</a>
@@ -60,7 +61,7 @@
                         </div>
                         <div class="hero-metrics">
                             <div><span>稼働時間</span><strong id="uptime">--</strong></div>
-                            <div><span>ChatGPT</span><strong id="chatgpt-summary">確認中</strong></div>
+                            <div><span>Responses</span><strong id="responses-summary">確認中</strong></div>
                             <div><span>API 成功率</span><strong id="api-success">--%</strong></div>
                             <div><span>最終更新</span><strong id="last-update">--:--:--</strong></div>
                         </div>
@@ -106,17 +107,20 @@
 
                     <div class="communications-grid">
                         <article class="panel composer-panel">
-                            <div class="panel-head"><div><p class="eyebrow">USER INPUT</p><h2>ChatGPTへ指示</h2></div><span class="route-label">POST /user_input</span></div>
+                            <div class="panel-head"><div><p class="eyebrow">USER INPUT</p><h2>Responsesへ指示</h2></div><span class="route-label">POST /user_input</span></div>
                             <form id="message-form">
-                                <label for="message-input">メッセージ</label>
-                                <div class="message-input-wrap">
-                                    <textarea id="message-input" rows="5" maxlength="2000" placeholder="例：現在の部屋の様子を教えて"></textarea>
-                                    <button id="microphone-button" class="microphone-button" type="button" aria-label="音声入力を開始" aria-pressed="false" title="音声入力を開始" disabled>
-                                        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15.5a3.5 3.5 0 0 0 3.5-3.5V6a3.5 3.5 0 1 0-7 0v6a3.5 3.5 0 0 0 3.5 3.5Zm-1-9.5a1 1 0 1 1 2 0v6a1 1 0 1 1-2 0V6Zm-5 5a1 1 0 0 1 1 1 5 5 0 0 0 10 0 1 1 0 1 1 2 0 7 7 0 0 1-6 6.92V21h3a1 1 0 1 1 0 2H8a1 1 0 1 1 0-2h3v-2.08A7 7 0 0 1 5 12a1 1 0 0 1 1-1Z"/></svg>
-                                    </button>
+                                <div id="live-controls" hidden>
+                                    <div class="live-buttons">
+                                        <button id="live-start" type="button" class="button primary">会話開始</button>
+                                        <button id="live-stop" type="button" class="button" disabled>会話終了</button>
+                                        <button id="live-audio-resume" type="button" class="button" hidden>音声再生を許可</button>
+                                    </div>
+                                    <p id="live-status" role="status">会話は停止しています</p>
+                                    <div id="live-transcript" class="live-transcript" aria-label="Live の文字起こし"></div>
                                 </div>
-                                <p id="microphone-status" class="microphone-status" aria-live="polite">音声入力を確認中</p>
-                                <div class="form-foot"><span><kbd>Ctrl</kbd> + <kbd>Enter</kbd> で送信</span><button class="button primary" type="submit">ChatGPTへ送信 <span>→</span></button></div>
+                                <label for="message-input">メッセージ</label>
+                                <textarea id="message-input" rows="5" maxlength="2000" placeholder="例：現在の部屋の様子を教えて"></textarea>
+                                <div class="form-foot"><span><kbd>Ctrl</kbd> + <kbd>Enter</kbd> で送信</span><button class="button primary" type="submit">Responsesへ送信 <span>→</span></button></div>
                             </form>
                         </article>
 
@@ -127,7 +131,7 @@
                                 <div><span>送信</span><strong id="outbound-count">0</strong><small>messages</small></div>
                                 <div><span>エラー</span><strong id="error-count">0</strong><small>events</small></div>
                             </div>
-                            <div class="bridge-path"><span>Devices</span><i></i><span>Kernel</span><i></i><span>ChatGPT</span></div>
+                            <div class="bridge-path"><span>Devices</span><i></i><span>Kernel</span><i></i><span>Responses</span></div>
                         </article>
                     </div>
 
@@ -190,6 +194,14 @@
                     </div>
                 </section>
 
+                <section id="memories" class="page-section" aria-labelledby="memory-heading">
+                    <article class="panel">
+                        <div class="panel-head"><div><p class="eyebrow">LONG-TERM MEMORY</p><h2 id="memory-heading">保存済み長期記憶</h2></div>
+                            <label>表示 <select id="memory-status"><option value="accepted">採用済み</option><option value="pending">採用待ち</option><option value="all">すべて</option></select></label>
+                            <button id="memory-refresh" class="button secondary" type="button">記憶を更新</button></div>
+                        <div id="memory-records" class="memory-records" aria-live="polite">読み込み中</div>
+                    </article>
+                </section>
                 <footer><span>Kokomi Kernel Operations Console</span><span id="footer-version">v1.0.0 · localhost</span></footer>
             </div>
         </main>

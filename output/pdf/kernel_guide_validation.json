@@ -1,0 +1,25 @@
+{
+  "pages": 65,
+  "outlines": 60,
+  "out_of_page_chars": [],
+  "replacement_chars": 0,
+  "toc_links": 60,
+  "date": "2026-10-29",
+  "branch": "feat/live-conversation-kernel",
+  "head": "ad2eb12136eb923a3e97738ddcb36330667f1a30",
+  "source_files": 73,
+  "source_hashes_match": true,
+  "outline_destinations_match": true,
+  "json_examples_valid": 7,
+  "tests": {
+    "runtime": "Node.js 24.22.1",
+    "command": "node --test",
+    "total": 104,
+    "pass": 104,
+    "fail": 0,
+    "skipped": 0,
+    "scope": "Existing mock and isolated-runtime tests; no paid Live or physical hardware testing"
+  },
+  "pdf_sha256": "938918c6dec8207a9f9669160056858476461056823c4bdeafcf44932417bd19",
+  "visual_review": "All 65 pages rendered and reviewed. Final revised reference tables re-rendered and inspected. No clipping or overlap observed."
+}

@@ -171,7 +171,8 @@ test("cognitive context keeps trigger, persona, state, world, memory, and propos
         payload: { text: "今日は寒いね" },
     });
     const context = architecture.composeContext(observation, {
-        memories: [{ id: "memory_1", content: "ユーザーは冷え性だと話した" }],
+        memories: [{ id: "memory_1", content: "ユーザーは冷え性だと話した" },
+            { id: "old_reading", content: "部屋の室温は二十六度だった" }],
     });
 
     assert.equal(context.type, "cognitive_context");
@@ -180,8 +181,9 @@ test("cognitive context keeps trigger, persona, state, world, memory, and propos
     assert.equal(context.trigger.payload.text, "今日は寒いね");
     assert.equal(context.persona.version, "test-version");
     assert.equal(context.memory[0].id, "memory_1");
-    assert.equal(context.state.environment.temperature_c, 24.5);
-    assert.equal(context.state.environment.humidity_percent, 67.3);
+    assert.equal(context.memory.length, 1);
+    assert.equal(context.state.environment, undefined);
+    assert.equal(architecture.snapshot().state.environment.temperature.value, 24.51695194063359);
     assert.equal(context.world.thermal_condition, "comfortable");
     assert.equal(context.world.lighting_condition, "bright");
     assert.equal(context.state.perception.person_present, "unknown");

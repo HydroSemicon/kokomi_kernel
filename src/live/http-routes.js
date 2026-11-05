@@ -1,4 +1,13 @@
-import { isLoopbackAddress } from "../speech/asr-token.js";
+function isLoopbackAddress(address) {
+    if (typeof address !== "string") return false;
+    const normalized = address.toLowerCase();
+    if (normalized === "::1" || normalized === "0:0:0:0:0:0:0:1") return true;
+    const ipv4 = normalized.startsWith("::ffff:") ? normalized.slice(7) : normalized;
+    const octets = ipv4.split(".");
+    return octets.length === 4
+        && octets[0] === "127"
+        && octets.every((octet) => /^\d{1,3}$/u.test(octet) && Number(octet) <= 255);
+}
 
 export function mountLiveRoutes(app, { service, config, ready = Promise.resolve() }) {
     const guard = (req, res, next) => {

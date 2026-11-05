@@ -131,7 +131,7 @@ test("replaying a persisted extraction after a checkpoint failure does not dupli
     assert.equal(f.journal.checkpoint.through, 1);
 });
 
-test("browser jobs wait for full round trips and prioritize pending control over memory", async () => {
+test("backend queue serializes jobs in a lane and orders pending jobs by priority", async () => {
     const queue = new BackendQueue();
     const order = [];
     let release;

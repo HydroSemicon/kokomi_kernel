@@ -1,14 +1,13 @@
 # Live 会話・カーネル分離仕様
 
-実装日: 2026-10-28。対象ブランチ: `feat/live-conversation-kernel`。
-ベース: `origin/main` の `ad2eb12`。このリポジトリの既定ブランチは `main`。
+現行構成: `codex/live-responses-kernel`。Puppeteer 版の復元元: `78127af`。
 
 ## 1. 目的と役割
 
 PC のマイクとスピーカーを使い、ブラウザのボタンで音声会話を開始・終了する。
-会話は `gpt-live-1` が担当し、視覚理解と機体制御の判断には既存の ChatGPT + Puppeteer を使う。
+会話は `gpt-live-1` が担当し、視覚理解・機体制御・記憶処理にはカーネルが直接呼ぶ Responses API を使う。
 身体状態、世界モデル、採用済み記憶、機体操作の監査・ActionGate・実行結果はカーネルが管理する。
-会話の音声を既存の発話 JSON 監査や ElevenLabs TTS に通さない。RVC は実装しない。
+音声の応答は Live が担当する。機体を操作する出力はカーネルで別途監査する。
 
 ```mermaid
 flowchart TD
@@ -16,8 +15,8 @@ flowchart TD
     L <-->|JSON sideband WebSocket| S[Live 接続管理]
     S --> J[会話ログ JSONL]
     S --> B[依頼と会話文脈の組み立て]
-    B --> Q[優先度付きブラウザ処理キュー]
-    Q <-->|JSON・必要な画像| P[既存 ChatGPT / Puppeteer]
+    B --> Q[制御キュー]
+    Q <-->|JSON・必要な画像| P[Responses API]
     P --> A[制御出力監査]
     A --> G[ActionGate]
     G --> D[機体・外部サービス]
@@ -25,7 +24,7 @@ flowchart TD
     O --> S
     C[センサー・世界モデル] --> S
     J --> M[定期記憶抽出]
-    M --> Q
+    M <-->|JSON| P
     M --> V[根拠検証・自動採否]
     V --> R[採用済み長期記憶]
     R --> S
@@ -37,10 +36,10 @@ flowchart TD
 2. `.env.example` を参考に、サーバーの `.env` に `OPENAI_API_KEY` を設定する。
    Restricted キーでは Live と Responses の Write を有効にする。実セッションで
    `missing_scope` / `api.responses.write` が報告され、Responses Write がないと Live 内部の履歴圧縮が無効になることを確認した。
-   この権限は Live 内部の履歴処理用で、機体制御バックエンドは引き続き ChatGPT + Puppeteer を使う。
+   Responses Write は機体制御・画像・記憶・検索の API 呼び出しにも必要。
 3. `config.live.personaPath` の人格設定ファイルを用意する。既定は隣接リポジトリ
    `../kokomi-persona/kokomi_origin.md`。`KOKOMI_PERSONA_PATH` で上書き可能。
-4. 従来どおり、デバッグポート 9222 の Chrome で制御用 ChatGPT を開き、ログインする。
+4. `npm ci` で依存関係をインストールする。
 5. `npm start` または `node alice.js` を実行する。
 6. `http://localhost:3000/` の「会話開始」を押し、マイク・音声再生を許可する。
 
@@ -53,8 +52,7 @@ flowchart TD
 変更前の指示は `prompts/live-conversation.pre-neutral-2026-10-28.md` に元の内容のまま保存した。
 比較時も人格ファイル、`live.voice`、身体状態に応じた追加指示は従来どおり。
 会話指示ファイルだけの編集は、現在の会話を終了して次に開始すると反映される。
-最初のバックエンド依頼の前に、更新済み `control_prompt.md` を既存チャットへ一度送る。
-これにより Live 用と従来用の応答形式を切り替える。ブラウザの選択モデルは変更しない。
+Responses の各依頼には、起動時に読み込んだ `control_prompt.md` を `instructions` として送る。
 
 `KOKOMI_CONFIG_PATH` で別の設定ファイルを指定できる。隔離起動テストでは一時ファイルを使い、
 実運用の観測・記憶ファイルを変更せず、センサー通信もローカルの偽デバイスへ向ける。
@@ -66,7 +64,7 @@ flowchart TD
 | カーネル起動 | 観測・記憶・会話ログ・抽出チェックポイントを復元。Live 接続は作らない。残った会話の抽出は再開できる。 |
 | 会話開始 | ブラウザがマイク取得、SDP offer を作成。サーバーが Live セッションを作り、同じセッションの sideband に接続して SDP answer を返す。 |
 | 音声開始待ち | sideband の接続成功だけでは会話中にしない。`session.started` を受け取るまで身体状態・話し方の append を送らない。ブラウザ側の開始通知も所有トークン付き heartbeat でカーネルに伝える。 |
-| 会話中 | WebRTC で聞く・話す。サーバーは文字起こしを保存。会話の応答は Puppeteer を待たない。 |
+| 会話中 | WebRTC で聞く・話す。サーバーは文字起こしを保存。音声会話は Responses の完了を待たない。 |
 | 機体・視覚の依頼 | 委譲通知と、その時点の文字起こしを結びつけてバックエンドへ送る。 |
 | 定期記憶処理 | 約 60 秒ごとに未処理範囲を選び、低優先度の抽出処理を予約。会話は続く。 |
 | 会話終了 | マイクと再生を直ちに停止。サーバーへ `session.close` を送り、終了・使用量の確認を待つ。残りの記憶抽出を予約。 |
@@ -157,27 +155,22 @@ flowchart TD
 
 - `result` は日本語の確認結果。`speech`・`emotion`・`intensity` はこの経路では拒否。
 - 操作・情報照会の形式と値域は既存監査を使う。
-- 生の LLM 出力から操作しない。対応する pending turn と監査を通す。
-- 画像照会では既存カメラ取得・画像添付処理を利用し、同じモデルに画像を見せる。
+- 生の LLM 出力から操作しない。リクエストと一致する `turn_id` と監査を通す。
+- 画像照会ではカメラのスナップショットを Base64 の `input_image` として Responses に渡す。
 - センサーの照会では stale / unknown を数値の現在値に置き換えない。
 - 情報照会の後続ターンにも元のユーザー依頼を保持する。１依頼１操作の上限は後続ターンを通じて共有する。
 - 操作がある場合、Live へ伝える完了情報は LLM の楽観的な `result` より実際の ActionGate/アダプタ結果を優先する。
 - 訂正・取り消しの語を検出したら依頼の世代を更新し、古い応答から機体操作や発話を行わない。
 - 依頼の有効期限を過ぎた結果も実行しない。視覚依頼と無関係な通常の雑談だけでは取り消さない。
 
-キューはブラウザへの入力だけでなく、応答が戻るまでを１件として直列化する。
-待機中の制御/視覚依頼を記憶抽出より優先する。実行中の記憶依頼は途中で追い越さない。
+制御キューでは複数の情報照会を含む依頼を順番に処理する。記憶抽出と根拠検証は別のキューを使う。
+HTTP リクエストの期限は `responses.timeoutMs`。Live の依頼が失効した場合は進行中のリクエストも中断する。
+HTTP 応答ごとに、完了状態・JSON・リクエストの `turn_id` を確認する。API の Structured Outputs で形を指定し、
+カーネルが値域・操作権限を検証する。API には `store: false` を指定し、必要な会話履歴はカーネルから渡す。
 
-制御用プロトコルの説明は、カーネル起動後の最初の依頼の `kernel_backend_bootstrap.instructions` に含める。
-説明文だけの独立した送信は行わず、次の依頼からは省略する。
-JSON は Puppeteer の `keyboard.sendCharacter`（CDP `Input.insertText`）で一括挿入し、
-入力欄の文字列が元の JSON と完全一致することを確認してから送信する。長文を一文字ずつ打鍵しない。
-`live.backendResponseTimeoutMs` は送信完了後から数える。入力欄・送信ボタンの待機には
-`browser.inputTimeoutMs` を使う。初回の送信が失敗した場合は、次回の依頼にも説明文を含める。
-送信ボタンは旧 `data-testid="send-button"` と、現在の編集欄を含む form の submit ボタンに対応する。
-待機で見つけた表示中・有効な要素そのものをクリックし、入力欄が空になったことを最大10秒待って確認する。
-確認できなければ送信成功として記録せず、再クリックもしない。エラーには入力検索・挿入・検証・
-ボタン検索・クリック・送信確認の処理段階を付ける。
+公開情報の照会では `web_search` を単独の要求として返す。カーネルはユーザー依頼の場合にのみ、
+公開クエリを専用の Responses リクエストに送る。Live には出典付きの回答内容を渡し、
+ダッシュボードのアクティビティには出典リンクを表示する。
 
 ## 7. 記憶の抽出・採用
 
@@ -283,7 +276,7 @@ JSON は Puppeteer の `keyboard.sendCharacter`（CDP `Input.insertText`）で�
 
 | キー | 既定値 | 用途 |
 |---|---:|---|
-| `live.enabled` | true | false で従来 ASR/TTS 経路へ戻す。 |
+| `live.enabled` | true | false で Live 音声を停止。文字入力と推論は使用可能。 |
 | `live.voice` | harema | 日本語の初期音声。次のセッション作成時に反映。 |
 | `memory.extraction.intervalSeconds` | 60 | 定期抽出の予約間隔。 |
 | `memory.extraction.retryIntervalSeconds` | 30 | 抽出失敗後の再試行間隔。 |
@@ -301,7 +294,10 @@ JSON は Puppeteer の `keyboard.sendCharacter`（CDP `Input.insertText`）で�
 | `live.delegationQuietMs` | 1200 | 委譲対象の発言が落ち着くまで待つ目安。 |
 | `live.delegationContextTimeoutMs` | 15000 | 依頼本文を待つ上限。 |
 | `live.delegationTtlMs` | 300000 | 委譲依頼の有効期間。 |
-| `live.backendResponseTimeoutMs` | 120000 | ブラウザ応答の待ち時間。 |
+| `responses.model` | gpt-6-luna | 制御・記憶・検索のモデル。 |
+| `responses.reasoningEffort` | low | 推論量。 |
+| `responses.timeoutMs` | 30000 | Responses のリクエスト期限。 |
+| `responses.webSearchEnabled` | true | 公開 Web 検索の利用可否。 |
 | `live.maxBackendSteps` | 4 | 情報照会を含む最大往復数。 |
 | `live.initialContextBudgetTokens` | 6000 | 初期文脈の保守的予算。 |
 | `live.updateBudgetTokens` | 450 | append １回の保守的予算。最大500。 |
@@ -318,8 +314,7 @@ JSON は Puppeteer の `keyboard.sendCharacter`（CDP `Input.insertText`）で�
 
 初回は同じPCからのみ使用する。更新系は設定した Origin と所有トークンを検査する。
 開始時だけ新しいトークンを発行し、サーバーは１セッションだけ所有する。
-通常の文字入力 `/user_input` は既存バックエンドへの明示的な依頼として残す。
-Live 有効時の従来 ASR 入力は拒否し、ElevenLabs TTS とローカルフィラーも無効化する。
+文字入力 `/user_input` は Responses に依頼を送り、成功時に `{status, result}` を返す。
 画面には開始・終了、再生許可、文字起こし、接続状態を表示する。
 双方向の音量統計と文字起こしで活動を確認し、無音が60秒続いたら通知とローカルの二連ビープを出す。
 音が再開すれば無音カウンターを戻す。ブラウザが警告音を許可しない場合は再生許可ボタンを案内する。
@@ -335,31 +330,10 @@ Live 有効時の従来 ASR 入力は拒否し、ElevenLabs TTS とローカル�
 
 ## 11. 検証と制限
 
-自動テストは `node --test`。実ネットワークの OpenAI、ChatGPT、機体を偽の依存先に置き換えて検証する。
-検証対象は接続の排他性、停止競合、heartbeat切断、終了再試行、委譲の対応、画像添付、
-実際の操作結果の優先、記憶の自動採否、再試行・クラッシュ復旧、HTTP制限、文字数予算、隔離起動。
-既存の ASR/TTS・行動・記憶・監査の回帰テストも維持する。
+自動テストは `npm test`。Responses、Live、カメラ、機体はテスト用の依存先に差し替える。
+API リクエスト、画像データ、検索出典、無効なターンの操作拒否、訂正時の処理、接続管理、記憶の採否と復旧を検証する。
+実音声と実機は別途受入試験を行う。
 
-実行結果: 全104テスト成功。開始前の append 抑止、イベント拒否後のマイク・接続維持、
-拒否の `error.client_event_id` による滞留解除と診断の保存を含む。別途 `KOKOMI_BROWSER_SMOKE=1` と
-`KOKOMI_BROWSER_PATH`（Chrome の実行ファイル）を設定して隔離起動テストを実行し、
-ヘッドレス Chrome で会話ボタン・キー未設定表示・旧マイクの無効化・JavaScript エラーなしを確認した。
-加えてローカルの textarea と contenteditable の両方に実際の初期説明文を含む約1万5千文字の JSON を
-一括挿入し、空白・日本語・絵文字を含めて欠落や改変がないことを確認した。外部には送信していない。
-実画面の DOM を読み取り、新しい submit ボタンへの一致も確認。ローカルでは同じ構造と非表示・無効な旧ボタンを
-再現し、有効な送信ボタンのクリックから入力欄のクリア確認まで検証した。
-新しい応答属性 `data-chatgpt-search-unit-key` への対応、新旧応答の検出、過去履歴・ユーザー JSON の除外、
-非アクティブなタブでの入力・送信、無音警告、記憶の閲覧とファイルの非変更も検証した。
-
-自動テストでは実 API を使用しない。初期実装後、利用者環境で接続直後のイベント拒否・自動終了が報告され、
-上記の開始待ち・拒否処理を修正した。旧ログには拒否理由が記録されておらず、拒否された具体的なコマンドは未特定。
-利用者から接続問題の解消が確認された。その後、初期説明文の長時間入力が報告され、
-一括挿入・初回依頼への同梱・応答期限の起算点を修正した。この入力修正後の実際の ChatGPT DOM を
-通した Live 委譲の一連の動作、実機音響エコーは未検証。
-API 利用権限と声の利用可否も実アカウントで確認する。
-UI/プロトコルの実装完了と、実音声・実機の受入試験完了は区別する。
-
-Puppeteer の応答速度やページ DOM 依存は残る。実行中の記憶抽出により機体判断が待つ場合も、Live の会話は独立して続く。
 ブラウザ/OS/ネットワークの強制終了では終了確認や最終使用量が取得できない場合がある。
 会話ログと記憶はローカルファイル方式で、現状は起動時に全体を読み込む。非常に大きい運用では保存先の索引化を別途検討する。
 

@@ -20,8 +20,6 @@ jobs:
     name: Node.js 22 regression tests
     runs-on: windows-latest
     timeout-minutes: 10
-    env:
-      PUPPETEER_SKIP_DOWNLOAD: "true"
 
     steps:
       - name: Check out repository

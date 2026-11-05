@@ -1,4 +1,4 @@
-// Serializes complete browser round trips, not just textarea writes.
+// Serializes jobs within one lane so control turns cannot overtake one another.
 export class BackendQueue {
     constructor() { this.pending = []; this.running = false; }
     submit(run, { priority = 0, valid = () => true } = {}) {

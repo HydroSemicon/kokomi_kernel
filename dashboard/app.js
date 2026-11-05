@@ -1,4 +1,3 @@
-import { AliceAsrClient } from "/dashboard/asr-client.js";
 import { LiveBrowserClient } from "/dashboard/live-client.js";
 
 const state = {
@@ -13,15 +12,12 @@ const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 
 const serviceNames = {
     kernel: "Kernel API",
-    chatgpt: "ChatGPT ブリッジ",
+    responses: "Responses API",
     bme280: "環境センサー",
     brightness: "照度センサー",
     actuators: "アクチュエーター",
     vision: "ビジョン",
     faceMemory: "顔記憶",
-    tts: "音声出力",
-    asr: "音声入力",
-    filler: "フィラー",
 };
 
 const statusLabels = {
@@ -86,13 +82,13 @@ function calculateSuccess(endpoints) {
 function renderHero(snapshot) {
     const unhealthy = snapshot.services.filter((service) => ["offline", "degraded"].includes(service.status));
     const kernelStatus = unhealthy.length ? "degraded" : "online";
-    const chatgpt = snapshot.services.find((service) => service.id === "chatgpt");
+    const responses = snapshot.services.find((service) => service.id === "responses");
     const dot = $("#kernel-dot");
     dot.className = `status-dot ${kernelStatus}`;
     $("#kernel-label").textContent = kernelStatus === "online" ? "システム正常" : `${unhealthy.length}件の要確認項目`;
     $("#kernel-description").textContent = kernelStatus === "online" ? "すべての主要コンポーネントが稼働しています" : "詳細を確認し、切断中のサービスを復旧してください";
     $("#uptime").textContent = formatUptime(snapshot.kernel.uptimeSeconds);
-    $("#chatgpt-summary").textContent = statusLabels[chatgpt?.status] || "不明";
+    $("#responses-summary").textContent = statusLabels[responses?.status] || "不明";
     $("#api-success").textContent = `${calculateSuccess(snapshot.endpoints)}%`;
     $("#last-update").textContent = formatClock(snapshot.generatedAt);
     $("#sidebar-port").textContent = `:${snapshot.kernel.port}`;
@@ -123,7 +119,7 @@ function renderSensors(snapshot) {
 }
 
 function renderServices(snapshot) {
-    const ordered = ["chatgpt", "bme280", "brightness", "actuators", "vision", "faceMemory", "asr", "tts", "filler"];
+    const ordered = ["responses", "bme280", "brightness", "actuators", "vision", "faceMemory"];
     const services = ordered.map((id) => snapshot.services.find((item) => item.id === id)).filter(Boolean);
     const healthy = services.filter((service) => ["online", "idle", "disabled"].includes(service.status)).length;
     $("#service-count").textContent = `${healthy}/${services.length} 利用可`;
@@ -146,6 +142,11 @@ function activityGlyph(item) {
 function activityHtml(item, compact = false) {
     const payload = item.payload == null ? "" : `<details class="json-details"><summary>JSONペイロードを表示</summary><pre>${escapeHtml(JSON.stringify(item.payload, null, 2))}</pre></details>`;
     const direction = item.direction === "inbound" ? "受信" : item.direction === "outbound" ? "送信" : "";
+    const sourceLinks = (item.sources || []).map(({ url, title }) => {
+        if (typeof url !== "string" || !/^https?:\/\//i.test(url)) return "";
+        return `<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(title)}</a>`;
+    }).filter(Boolean).join(" · ");
+    const citations = sourceLinks ? `<p class="activity-summary">${sourceLinks}</p>` : "";
     const meta = compact ? "" : `<div class="activity-meta">
         ${item.endpoint ? `<span>${escapeHtml(item.endpoint)}</span>` : ""}
         ${item.service ? `<span>${escapeHtml(serviceNames[item.service] || item.service)}</span>` : ""}
@@ -153,7 +154,7 @@ function activityHtml(item, compact = false) {
     </div>`;
     return `<article class="activity-item ${escapeHtml(item.status)}" data-direction="${escapeHtml(item.direction || "")}" data-status="${escapeHtml(item.status)}">
         <span class="activity-glyph" aria-hidden="true">${activityGlyph(item)}</span>
-        <div class="activity-main"><div class="activity-title"><strong>${escapeHtml(item.title)}</strong>${direction ? `<span class="direction">${direction}</span>` : ""}</div><p class="activity-summary">${escapeHtml(item.summary || "詳細情報なし")}</p>${meta}</div>
+        <div class="activity-main"><div class="activity-title"><strong>${escapeHtml(item.title)}</strong>${direction ? `<span class="direction">${direction}</span>` : ""}</div><p class="activity-summary">${escapeHtml(item.summary || "詳細情報なし")}</p>${citations}${meta}</div>
         <time class="activity-time" datetime="${escapeHtml(item.timestamp)}">${formatRelative(item.timestamp)}</time>
         ${compact ? "" : payload}
     </article>`;
@@ -216,7 +217,6 @@ function renderCognition(snapshot) {
     const needs = drives.needs || {};
     const social = snapshot.social || {};
     const gate = snapshot.actionGate || {};
-    const turns = snapshot.cognitiveTurns || {};
     const persistence = snapshot.persistence || {};
     const outcomes = gate.recent_outcomes || [];
     const latestOutcome = outcomes[0];
@@ -259,7 +259,6 @@ function renderCognition(snapshot) {
             <dl class="fact-list">
                 <div><dt>実行待ち意図</dt><dd>${pendingIntentions.length}件</dd></div>
                 <div><dt>直近の結果</dt><dd>${escapeHtml(latestOutcome ? `${latestOutcome.action_type}: ${latestOutcome.status}` : "未実行")}</dd></div>
-                <div><dt>照合待ちターン</dt><dd>${turns.count || 0}件</dd></div>
                 <div><dt>復元イベント</dt><dd>${persistence.loaded || 0}件</dd></div>
                 <div><dt>間引き済み観測</dt><dd>${persistence.skippedCheckpoints || 0}件</dd></div>
             </dl>
@@ -274,7 +273,7 @@ function render(snapshot) {
     renderActivity(snapshot);
     renderEndpoints(snapshot);
     renderCognition(snapshot);
-    renderMicrophoneAvailability(snapshot);
+    renderLiveAvailability(snapshot);
 }
 
 async function fetchSnapshot({ quiet = false } = {}) {
@@ -356,50 +355,16 @@ function showToast(title, message, isError = false) {
     setTimeout(() => toast.remove(), 3800);
 }
 
-let microphoneClient = null;
-
-function microphoneConfig() {
-    const capability = state.snapshot?.capabilities?.asr;
-    if (capability && typeof capability === "object") return capability;
-    return { enabled: state.snapshot?.capabilities?.asrEnabled !== false };
-}
-
-function updateMicrophoneUi(asrState, message) {
-    const button = $("#microphone-button");
-    const status = $("#microphone-status");
-    const active = Boolean(microphoneClient?.isStarted);
-    button.classList.toggle("active", active);
-    button.setAttribute("aria-pressed", String(active));
-    button.setAttribute("aria-label", active ? "音声入力を停止" : "音声入力を開始");
-    button.title = active ? "音声入力を停止" : "音声入力を開始";
-    status.textContent = message;
-    status.classList.toggle("error", asrState === "error" || asrState === "unavailable");
-}
-
-function renderMicrophoneAvailability(snapshot) {
+function renderLiveAvailability(snapshot) {
     const live = snapshot.capabilities?.live;
     $("#live-controls").hidden = !live?.enabled;
-    if (live?.enabled) {
-        if (liveClient) Object.assign(liveClient.config, live);
-        $("#microphone-button").disabled = true;
-        $("#live-start").disabled = !live.ready || Boolean(liveClient?.active || liveClient?.starting || liveClient?.closing || liveClient?.owner);
-        if (!live.ready) $("#live-status").textContent = "サーバーに OPENAI_API_KEY を設定してください";
-        $("#microphone-status").textContent = "会話開始・終了は Live のボタンで操作します";
-        return;
-    }
-    if (microphoneClient?.isStarted) return;
-    const capability = snapshot.capabilities?.asr;
-    const enabled = typeof capability === "object"
-        ? capability.enabled
-        : snapshot.capabilities?.asrEnabled;
-    $("#microphone-button").disabled = !enabled;
-    updateMicrophoneUi(
-        enabled ? "idle" : "unavailable",
-        enabled ? "マイクボタンで音声入力を開始できます" : "音声入力は設定で無効です",
-    );
+    if (!live?.enabled) return;
+    if (liveClient) Object.assign(liveClient.config, live);
+    $("#live-start").disabled = !live.ready || Boolean(liveClient?.active || liveClient?.starting || liveClient?.closing || liveClient?.owner);
+    if (!live.ready) $("#live-status").textContent = "サーバーに OPENAI_API_KEY を設定してください";
 }
 
-function bindMicrophone() {
+function bindLive() {
     liveClient = new LiveBrowserClient({
         config: { iceTimeoutMs: state.snapshot?.capabilities?.live?.iceTimeoutMs ?? 10000 },
         onSilenceWarning: ({ silentSeconds, soundPlayed }) => {
@@ -432,83 +397,6 @@ function bindMicrophone() {
     $("#live-stop").addEventListener("click", () => liveClient.stop());
     $("#live-audio-resume").addEventListener("click", () => liveClient.resumeAudio());
     window.addEventListener("pagehide", () => liveClient.pageHide());
-    const input = $("#message-input");
-    const button = $("#microphone-button");
-    microphoneClient = new AliceAsrClient({
-        getConfig: microphoneConfig,
-        onStatus: ({ state: asrState, message }) => {
-            button.disabled = false;
-            updateMicrophoneUi(asrState, message);
-        },
-        onPartial: (text) => {
-            input.value = text;
-        },
-        onCommitted: (text) => {
-            input.value = text;
-            updateMicrophoneUi("sending", "確定した音声をChatGPTへ送信中");
-        },
-        onDelivered: ({ text, result }) => {
-            if (input.value === text) input.value = "";
-            const suppressed = result.status === "echo_suppressed" || result.status === "capture_suppressed";
-            updateMicrophoneUi(
-                microphoneClient.isStarted ? "listening" : "idle",
-                suppressed ? "心海の自己音声を抑制しました" : "送信済み — 続けて話せます",
-            );
-            showToast(
-                suppressed ? "自己音声を抑制しました" : "音声入力を送信しました",
-                suppressed ? "ChatGPTへの重複送信はありません" : text,
-            );
-        },
-        onDeliveryError: (error, event) => {
-            if (event.kind === "partial") return;
-            updateMicrophoneUi("error", "送信に失敗しました — 認識結果を入力欄に残しています");
-            showToast("音声入力の送信に失敗しました", error.message, true);
-        },
-    });
-
-    let controlClientId = null;
-    const captureControl = new EventSource("/api/asr/control");
-    captureControl.addEventListener("hello", (event) => {
-        controlClientId = JSON.parse(event.data).client_id;
-    });
-    captureControl.addEventListener("capture", async (event) => {
-        const command = JSON.parse(event.data);
-        try {
-            await microphoneClient.setCapturePaused(command.paused, command.reason);
-        } finally {
-            if (controlClientId) {
-                fetch("/api/asr/control/ack", {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({
-                        client_id: controlClientId,
-                        revision: command.revision,
-                        paused: command.paused,
-                    }),
-                }).catch(() => {});
-            }
-        }
-    });
-
-    button.addEventListener("click", async () => {
-        if (microphoneClient.isStarted) {
-            microphoneClient.stop();
-            return;
-        }
-        if (microphoneConfig().enabled === false) {
-            showToast("音声入力を開始できません", "config.jsonでASRが無効です", true);
-            return;
-        }
-        try {
-            await microphoneClient.start();
-        } catch (error) {
-            showToast("音声入力を開始できません", error.message, true);
-        }
-    });
-    window.addEventListener("beforeunload", () => {
-        captureControl.close();
-        microphoneClient.stop();
-    });
 }
 
 function bindForms() {
@@ -517,9 +405,9 @@ function bindForms() {
         const text = $("#message-input").value.trim();
         if (!text) return showToast("入力が必要です", "メッセージを入力してください", true);
         try {
-            await postJson("/user_input", { text }, event.submitter || $('#message-form button[type="submit"]'));
+            const response = await postJson("/user_input", { text }, event.submitter || $('#message-form button[type="submit"]'));
             $("#message-input").value = "";
-            showToast("送信しました", "ChatGPTブリッジへ入力を渡しました");
+            showToast("処理が完了しました", response?.result || "Responses が依頼を処理しました");
         } catch (error) {
             showToast("送信に失敗しました", error.message, true);
         }
@@ -636,7 +524,7 @@ $("#memory-status").addEventListener("change", refreshMemory);
 refreshMemory();
 setInterval(refreshMemory, 15000);
 
-bindMicrophone();
+bindLive();
 bindForms();
 bindNavigation();
 updateClock();

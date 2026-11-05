@@ -229,7 +229,7 @@ export class LiveSessionService {
             const task = { sessionId: session.id, delegationId: id, revision: session.revision,
                 createdAt: this.clock(), offsetMs: event.offset_ms };
             this.append("thinking", "", id); // Suppress a redundant automatic acknowledgement.
-            // Do not block transcript receipt while the browser backend works.
+            // Do not block transcript receipt while Responses works.
             Promise.resolve().then(() => this.onDelegation(task)).catch(() => {
                 if (this.isCurrent(task)) this.append("commentary", "身体側の処理に失敗しました。結果はまだ確認できていません。", id);
             });

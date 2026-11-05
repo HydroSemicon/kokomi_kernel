@@ -214,6 +214,39 @@ test("a correction during backend execution prevents an outdated action from run
     assert.equal(await f.bridge.submitContext({ turn_id: "root" }, { sessionId: "live_test" }), null);
 });
 
+test("Live receives further speech during vision work, even when memory inference is still pending", { timeout: 2000 }, async () => {
+    const memory = Promise.withResolvers();
+    const visionStarted = Promise.withResolvers();
+    const vision = Promise.withResolvers();
+    const f = fixture({ onDelegation: (task) => bridge.submitContext({ turn_id: "vision_root" }, task) });
+    const bridge = bridgeFixture({ live: f.service,
+        runBackend: async (context, { image } = {}) => {
+            if (context.task === "live_memory") return memory.promise;
+            if (!image) return { requests: [{ type: "vision", params: { task: "describe_scene" } }] };
+            visionStarted.resolve();
+            return vision.promise;
+        },
+    }).bridge;
+    const owner = await f.service.start("v=0 offer");
+    await f.service.events;
+    const extracting = bridge.extract({ batch: { groups: [] }, known: [], previousSummary: "" });
+    const session = f.service.session;
+    await f.service.handle(session, { type: "session.delegation.created", event_id: "vision_delegation", offset_ms: 0,
+        delegation: { id: "vision_lookup", target: "client" } });
+    await visionStarted.promise;
+    await f.service.handle(session, { type: "session.input_transcript.delta", event_id: "speech_during_vision",
+        delta: "最近は紅茶が好き", start_ms: 300, end_ms: 900 });
+    assert.ok(f.logged.some((entry) => entry.text === "最近は紅茶が好き"));
+    assert.equal(f.service.status, "active");
+    memory.resolve({ memory_extraction: { summary: "", candidates: [] } });
+    vision.resolve({ result: "赤いマグがあります。" });
+    await extracting;
+    await bridge.queue.submit(() => {});
+    assert.ok(f.sockets[0].sent.some((event) => event.type === "session.commentary.append"
+        && event.delegation_id === "vision_lookup" && event.content === "赤いマグがあります。"));
+    await f.service.stop(owner.control_token);
+});
+
 test("browser stop closes tracks and playback before awaiting server closure", async () => {
     const order = [];
     let finishStop;

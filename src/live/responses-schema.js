@@ -20,13 +20,13 @@ export function responseFormats(config) {
         variant("vision", { task: choices(config.vision.task) }),
         variant("kernel_query", { resource: choices("state", "world", "drives", "social", "memory", "action"), query: optionalString })];
     if (config.responses.webSearchEnabled) requests.push(variant("web_search", { query: string }));
-    const proposal = object({ kind: choices("episodic", "preference", "relationship", "semantic"), subject: string,
-        content: string, confidence: { type: "number" }, evidence_event_ids: array(string), retention: choices("session", "long") });
-    const evidence = object({ quote: string, evidence_event_ids: array(string) });
+    const memoryCandidate = object({ kind: choices("episodic", "preference", "relationship", "semantic"), content: string,
+        confidence: { type: "number" }, retention: choices("session", "long"), evidence_refs: array(string), explicit: boolean, conflict: boolean });
     return {
         live_control: format("kernel_control", { result: optionalString, actions: array(actions), requests: array(oneOf(...requests)) }),
+        live_vision: format("kernel_vision", { result: string }),
         live_memory: format("kernel_memory", { memory_extraction: object({ summary: string,
-            candidates: array(object({ proposal, evidence: array(evidence), explicit: boolean, conflict: boolean })) }) }),
+            candidates: array(memoryCandidate) }) }),
         live_memory_review: format("kernel_memory_review", { memory_verification: object({ supported_indices: array(integer) }) }),
     };
 }

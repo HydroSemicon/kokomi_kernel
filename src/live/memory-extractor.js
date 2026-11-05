@@ -1,6 +1,6 @@
 import { validateMemoryProposals } from "../memory/memory-store.js";
 import { fitText } from "./text-budget.js";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
 const FORBIDDEN = /パスワード|秘密鍵|API.?キー|アクセストークン|password|credential|secret|許可|権限|禁止|承認|permission|authorization|覚えないで|記録しないで/iu;
 const UNCERTAIN = /もし|仮に|たとえば|例えば|冗談|かもしれ|だったら|hypothetical|joking|maybe/iu;
@@ -61,34 +61,66 @@ export function validateExtraction(result) {
 }
 
 export class MemoryExtractor {
-    constructor({ config, conversations, memory, run, verify = null, onStatus = () => {}, clock = () => Date.now() }) {
-        Object.assign(this, { config, conversations, memory, run, verify, onStatus, clock });
+    constructor({ config, conversations, memory, run, verify = null, onStatus = () => {}, onDiagnostic = () => {}, clock = () => Date.now() }) {
+        Object.assign(this, { config, conversations, memory, run, verify, onStatus, onDiagnostic, clock });
         this.running = null;
         this.flushRequested = false;
         this.retryAfter = 0;
+        this.failures = 0;
+        this.maxFailures = config.maxConsecutiveFailures ?? 3;
+        this.maxBatchGroups = config.maxBatchGroups ?? 16;
+        if (![this.maxFailures, this.maxBatchGroups].every((value) => Number.isInteger(value) && value > 0)) {
+            throw new TypeError("Invalid memory extraction retry or batch limit");
+        }
         for (const field of ["intervalSeconds", "retryIntervalSeconds", "stableSilenceMs", "maxBatchBytes", "summaryBudgetTokens"]) {
             if (!Number.isInteger(config[field]) || config[field] <= 0) throw new TypeError(`Invalid memory.extraction.${field}`);
         }
     }
 
     tick({ flush = false } = {}) {
+        if (!this.config.enabled || this.failures >= this.maxFailures) return Promise.resolve();
         this.flushRequested ||= flush;
-        if (!this.config.enabled || this.running || this.clock() < this.retryAfter) return this.running ?? Promise.resolve();
-        this.running = this.extract().catch((error) => {
-            this.retryAfter = this.clock() + this.config.retryIntervalSeconds * 1000;
-            this.onStatus({ status: "error", message: error.message });
+        if (this.running || this.clock() < this.retryAfter) return this.running ?? Promise.resolve();
+        const attemptId = randomUUID();
+        const startedAt = this.clock();
+        let phaseStartedAt = startedAt;
+        let phase = "select_batch";
+        const step = (next, fields = {}) => {
+            const now = this.clock();
+            this.onDiagnostic("memory.phase", { attemptId, phase: next, previousPhase: phase,
+                previousPhaseMs: now - phaseStartedAt, elapsedMs: now - startedAt, ...fields });
+            phase = next;
+            phaseStartedAt = now;
+        };
+        const trigger = this.retryAfter ? "retry" : this.flushRequested ? "flush" : "interval";
+        this.running = this.extract({ attemptId, trigger, step }).catch((error) => {
+            this.failures++;
+            const paused = this.failures >= this.maxFailures;
+            this.retryAfter = paused ? 0 : this.clock() + this.config.retryIntervalSeconds * 1000 * 2 ** (this.failures - 1);
+            if (paused) this.flushRequested = false;
+            this.onDiagnostic("memory.failed", { attemptId, phase, elapsedMs: this.clock() - startedAt,
+                phaseMs: this.clock() - phaseStartedAt, failures: this.failures, paused,
+                retryAt: this.retryAfter ? new Date(this.retryAfter).toISOString() : null });
+            this.onStatus({ status: "error", message: paused ? `${error.message} (automatic retries paused until restart)` : error.message });
         }).finally(() => { this.running = null; });
         return this.running;
     }
 
-    async extract() {
+    async extract({ attemptId, trigger, step = () => {} } = {}) {
         const prepared = this.conversations.checkpoint.prepared;
         const batch = prepared?.batch ?? this.conversations.batch({ stableMs: this.config.stableSilenceMs,
-            maxBytes: this.config.maxBatchBytes, flush: this.flushRequested });
+            maxBytes: this.config.maxBatchBytes, maxGroups: this.maxBatchGroups, flush: this.flushRequested });
         if (!batch) { this.flushRequested = false; return; }
+        const sizes = batch.groups.map((group) => group.evidence_event_ids.length);
+        step("retrieve_memories", { trigger, from: batch.from, through: batch.through, prepared: Boolean(prepared),
+            groups: sizes.length, textBytes: batch.groups.reduce((total, group) => total + Buffer.byteLength(group.text), 0),
+            groupsBytes: Buffer.byteLength(JSON.stringify(batch.groups)), evidenceIds: sizes.reduce((total, size) => total + size, 0),
+            maxIdsPerGroup: sizes.reduce((max, size) => Math.max(max, size), 0), groupsAbove20Ids: sizes.filter((size) => size > 20).length });
         this.onStatus({ status: "running", through: batch.through });
         const known = this.memory.retrieve(batch.groups.map((group) => group.text).join(" "), { limit: 10 });
-        const result = prepared?.result ?? await this.run({ batch, known, previousSummary: this.conversations.checkpoint.summary });
+        if (!prepared) step("extract", { knownMemories: known.length });
+        const result = prepared?.result ?? await this.run({ batch, known, previousSummary: this.conversations.checkpoint.summary, attemptId });
+        step("check_evidence");
         const error = validateExtraction(result);
         if (error) throw new Error(error);
         for (const candidate of result.candidates) {
@@ -99,7 +131,9 @@ export class MemoryExtractor {
         }
         let verifiedIndices = prepared?.verifiedIndices ?? [];
         if (!prepared && result.candidates.length && this.verify) {
-            const verification = await this.verify({ batch, candidates: result.candidates, known });
+            step("verify", { candidates: result.candidates.length });
+            const verification = await this.verify({ batch, candidates: result.candidates, known, attemptId });
+            step("check_verification");
             const verificationError = validateVerification(verification);
             if (verificationError || verification.supported_indices.some((index) => index >= result.candidates.length)) {
                 throw new Error(verificationError ?? "Memory verification references an unknown candidate");
@@ -108,7 +142,11 @@ export class MemoryExtractor {
         }
         // Persist the immutable result before applying decisions so a crash/retry cannot
         // ask the model for a different candidate list for an already-applied batch.
-        if (!prepared) await this.conversations.prepare(batch, result, { verifiedIndices });
+        if (!prepared) {
+            step("prepare", { verifiedCandidates: verifiedIndices.length });
+            await this.conversations.prepare(batch, result, { verifiedIndices });
+        }
+        step("save", { candidates: result.candidates.length });
         for (let index = 0; index < result.candidates.length; index++) {
             const candidate = result.candidates[index];
             const proposal = candidate.proposal;
@@ -139,8 +177,11 @@ export class MemoryExtractor {
                 evidence: evidenceFor(candidate), verified: verifiedIndices.includes(index) });
             if (accept && record.status === "pending") await this.memory.decide(record.id, "accepted");
         }
+        step("commit");
         await this.conversations.commit(batch.through, fitText(result.summary, this.config.summaryBudgetTokens));
+        step("completed", { through: batch.through });
         this.retryAfter = 0;
+        this.failures = 0;
         this.onStatus({ status: "completed", through: batch.through });
         // Pending flush remains armed until a later tick drains the last batch.
     }

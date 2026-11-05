@@ -84,8 +84,10 @@
             "intervalSeconds": 60,
             "flushOnSessionEnd": true,
             "retryIntervalSeconds": 30,
+            "maxConsecutiveFailures": 3,
             "stableSilenceMs": 2000,
             "maxBatchBytes": 16000,
+            "maxBatchGroups": 16,
             "summaryBudgetTokens": 1600
         }
     },
@@ -135,9 +137,6 @@
         "delegationTtlMs": 300000,
         "intoxicationSignal": "intoxication",
         "quantization": {
-            "temperatureC": 0.5,
-            "humidityPercent": 5,
-            "brightnessRaw": 10,
             "lightIntoxication": 0.2,
             "moderateIntoxication": 0.6
         }

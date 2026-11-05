@@ -10,6 +10,8 @@ import { BackendQueue } from "../src/live/backend-queue.js";
 import { fitText, textChunks, textCost } from "../src/live/text-budget.js";
 import { LlmResponseProtocol } from "../src/protocol/llm-response.js";
 import { normalizeExistingMemories } from "../src/memory/normalize-existing.js";
+import { LiveKernelBridge } from "../src/live/kernel-bridge.js";
+import { ResponsesBackend } from "../src/live/responses-backend.js";
 
 const config = JSON.parse(await fs.readFile(new URL("../config.json", import.meta.url), "utf8"));
 
@@ -98,12 +100,18 @@ test("failed extraction retains the cursor, retries only after backoff, and cann
     await f.journal.append({ sessionId: "live_one", role: "user", text: "紅茶が好き", eventId: "a" });
     let attempts = 0;
     let release;
+    const trace = [];
     const extractor = new MemoryExtractor({ config: config.memory.extraction, conversations: f.journal, memory: f.memory,
-        clock: f.clock, run: async () => { attempts++; await new Promise((resolve) => { release = resolve; }); throw new Error("offline"); } });
+        clock: f.clock, onDiagnostic: (event, details) => trace.push({ event, ...details }),
+        run: async () => { attempts++; await new Promise((resolve) => { release = resolve; }); throw new Error("offline"); } });
     const first = extractor.tick({ flush: true });
     assert.equal(extractor.tick({ flush: true }), first);
     release();
     await first;
+    const failure = trace.find((item) => item.event === "memory.failed");
+    assert.equal(failure.phase, "extract");
+    assert.equal(failure.attemptId, trace[0].attemptId);
+    assert.equal(Date.parse(failure.retryAt), f.clock() + config.memory.extraction.retryIntervalSeconds * 1000);
     assert.equal(f.journal.checkpoint.through, 0);
     await extractor.tick();
     assert.equal(attempts, 1);
@@ -112,6 +120,63 @@ test("failed extraction retains the cursor, retries only after backoff, and cann
     await extractor.tick();
     assert.equal(attempts, 2);
     assert.equal(f.memory.list({ status: "accepted" }).length, 1);
+    const retry = trace.find((item) => item.trigger === "retry");
+    assert.notEqual(retry.attemptId, failure.attemptId);
+    assert.ok(trace.some((item) => item.attemptId === retry.attemptId && item.phase === "completed"));
+});
+
+test("extraction sends one short reference for a long fragmented utterance and stores grounded evidence", async (t) => {
+    const f = await fixture(t);
+    const text = "ユーザーは新しく買った赤いマグカップを気に入っている。";
+    for (const [i, char] of [...text].entries()) await f.journal.append({ sessionId: "live_one", role: "user", text: char, eventId: `fragment_${i}` });
+    assert.ok(f.journal.entries.length > 20);
+    const originalId = f.journal.entries[0].id;
+    const seen = [];
+    const protocol = new LlmResponseProtocol(config);
+    const backend = new ResponsesBackend({ config, apiKey: "test", audit: protocol.audit.bind(protocol),
+        fetchImpl: async (_url, { body }) => {
+            const parsed = JSON.parse(body);
+            const input = JSON.parse(parsed.input[0].content[0].text);
+            seen.push(input.task);
+            assert.doesNotMatch(body, /live_[0-9a-f]{40}|evidence_event_ids/u);
+            assert.deepEqual(input.conversation, [{ role: "user", text, ref: "u1" }]);
+            const payload = input.task === "live_memory" ? { memory_extraction: { summary: "マグカップの話", candidates: [{
+                kind: "preference", content: text, confidence: 0.9, retention: "long", evidence_refs: ["u1"], explicit: true, conflict: false,
+            }] } } : { memory_verification: { supported_indices: [0] } };
+            if (input.task === "live_memory_review") assert.deepEqual(input.candidates, [{ index: 0, content: text, evidence_refs: ["u1"] }]);
+            return Response.json({ status: "completed", output: [{ type: "message", role: "assistant", status: "completed",
+                content: [{ type: "output_text", text: JSON.stringify({ turn_id: input.turn_id, ...payload }) }] }] });
+        } });
+    const bridge = new LiveKernelBridge({ config: config.live, runBackend: backend.run.bind(backend) });
+    const extractor = new MemoryExtractor({ config: config.memory.extraction, conversations: f.journal, memory: f.memory,
+        clock: f.clock, run: bridge.extract.bind(bridge), verify: bridge.verify.bind(bridge) });
+    await extractor.tick({ flush: true });
+    assert.deepEqual(seen, ["live_memory", "live_memory_review"]);
+    const [stored] = f.memory.list({ status: "accepted" });
+    assert.deepEqual(stored.evidence_event_ids, [originalId]);
+    assert.deepEqual(stored.evidence, [{ quote: text, evidence_event_ids: [originalId] }]);
+    assert.equal(f.journal.checkpoint.through, f.journal.entries.length);
+});
+
+test("memory batching respects group and session limits, and repeated failures pause without advancing the cursor", async (t) => {
+    const f = await fixture(t);
+    await f.journal.append({ sessionId: "live_one", role: "user", text: "紅茶が好き" });
+    await f.journal.append({ sessionId: "live_one", role: "assistant", text: "そうなんだ" });
+    await f.journal.append({ sessionId: "live_two", role: "user", text: "こんばんは" });
+    assert.equal(f.journal.batch({ flush: true, maxBytes: 16000, maxGroups: 1 }).through, 1);
+    assert.equal(f.journal.batch({ flush: true, maxBytes: 16000 }).through, 2);
+    const errors = [];
+    const extractor = new MemoryExtractor({ config: config.memory.extraction, conversations: f.journal, memory: f.memory,
+        clock: f.clock, onDiagnostic: (event, details) => { if (event === "memory.failed") errors.push(details); },
+        run: async () => { throw new Error("offline"); } });
+    for (let i = 0; i < 5; i++) {
+        await extractor.tick({ flush: true });
+        f.setNow(f.clock() + 120000);
+    }
+    assert.equal(errors.length, 3);
+    assert.equal(errors.at(-1).paused, true);
+    assert.equal(errors.at(-1).retryAt, null);
+    assert.equal(f.journal.checkpoint.through, 0);
 });
 
 test("replaying a persisted extraction after a checkpoint failure does not duplicate its memory", async (t) => {

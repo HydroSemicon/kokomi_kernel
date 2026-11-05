@@ -6,6 +6,7 @@ import { fileURLToPath } from "url";
 import "dotenv/config";
 import { BehaviorArchitecture } from "./src/behavior/index.js";
 import { observationSearchText } from "./src/behavior/observation.js";
+import { hasEnvironmentReading } from "./src/behavior/environment-text.js";
 import { MemoryStore } from "./src/memory/memory-store.js";
 import { normalizeExistingMemories } from "./src/memory/normalize-existing.js";
 import { EventStore } from "./src/behavior/event-store.js";
@@ -20,6 +21,7 @@ import { MemoryExtractor } from "./src/live/memory-extractor.js";
 import { mountLiveRoutes } from "./src/live/http-routes.js";
 import { bodyContext } from "./src/live/body-context.js";
 import { ResponsesBackend } from "./src/live/responses-backend.js";
+import { ApiDiagnostics } from "./src/live/api-diagnostics.js";
 
 const config = JSON.parse(fs.readFileSync(process.env.KOKOMI_CONFIG_PATH
     ? path.resolve(process.env.KOKOMI_CONFIG_PATH) : new URL("./config.json", import.meta.url), "utf8"));
@@ -35,6 +37,9 @@ const LIVE_ENABLED = config.live?.enabled === true;
 const BSKY_IDENTIFIER = process.env.BSKY_IDENTIFIER;
 const BSKY_PASSWORD = process.env.BSKY_PASSWORD;
 const repositoryDirectory = path.dirname(fileURLToPath(import.meta.url));
+const apiDiagnostics = new ApiDiagnostics(path.join(
+    path.dirname(path.resolve(repositoryDirectory, config.live.conversationPath)), "live-api-diagnostics.jsonl"));
+const logApi = (event, fields) => apiDiagnostics.record(event, fields);
 const behaviorArchitecture = new BehaviorArchitecture({
     config: config.behavior,
 });
@@ -101,11 +106,13 @@ let liveService;
 let liveBridge;
 let memoryExtractor;
 let lastMemoryTickAt = Date.now();
+let lastLiveDiagnostic;
 const responsesBackend = new ResponsesBackend({
     config,
     apiKey: process.env.OPENAI_API_KEY,
     instructions: fs.readFileSync(new URL("./control_prompt.md", import.meta.url), "utf8"),
     audit: (payload, options) => responseProtocol.audit(payload, options),
+    onDiagnostic: logApi,
     onRequest: ({ error, durationMs }) => updateService("responses", {
         status: error ? "degraded" : "online", detail: error || config.responses.model, latencyMs: durationMs,
     }),
@@ -369,14 +376,34 @@ liveService = new LiveSessionService({
         return prompt;
     },
     getContext: liveBodyContext,
-    onDelegation: (task) => liveBridge.delegate(task),
+    onDelegation: async (task) => {
+        recordActivity({ category: "communication", direction: "inbound", service: "live",
+            title: "Live delegation requested", summary: "Live requested a backend task" });
+        try {
+            await liveBridge.delegate(task);
+        } catch (error) {
+            if (liveService.isCurrent(task)) {
+                recordActivity({ category: "communication", status: "error", service: "responses",
+                    title: "Live delegation failed", summary: error.message });
+            }
+            throw error;
+        }
+    },
     onTranscript: (entry) => {
         if (entry.role !== "user") return;
+        liveBridge.observeTranscript(entry);
         // Update interaction recency without turning every transcript fragment into an LLM request.
         return ingestObservation({ id: entry.id, type: "interaction.live_activity", source: "live",
             payload: { session_id: entry.session_id } }, { persist: false });
     },
     onStatus: (status) => {
+        const diagnostic = { sessionId: status.sessionId, status: status.status,
+            closeConfirmed: status.closeConfirmed, eventErrorCode: status.lastEventError?.code };
+        const signature = JSON.stringify(diagnostic);
+        if (signature !== lastLiveDiagnostic) {
+            lastLiveDiagnostic = signature;
+            logApi("live.state", diagnostic);
+        }
         if (status.status === "active") lastMemoryTickAt = Date.now();
         updateService("live", { status: status.contextWarning ? "degraded" : status.status === "active" ? "online"
             : status.status === "error" ? "degraded" : status.status,
@@ -395,20 +422,24 @@ liveBridge = new LiveKernelBridge({
     search: config.responses.webSearchEnabled ? (query, valid) => responsesBackend.search(query, valid) : null,
     onSearch: ({ text, sources }) => recordActivity({ category: "communication", service: "responses",
         title: "Web search result", summary: text, sources }),
+    onCamera: ({ fromTranscript }) => recordActivity({ category: "communication", service: "vision",
+        title: "Camera request accepted", summary: fromTranscript ? "Matched a direct camera question in the transcript" : "Delegated by Live" }),
     query: async (request) => {
         if (typeof request === "string") {
-            const fact = behaviorArchitecture.snapshot().state.environment[request];
-            return { resource: request, status: fact?.status ?? "unknown",
-                result: fact?.status === "known" ? fact.value : null, unit: SENSOR_UNITS[request] };
+            const environment = behaviorArchitecture.snapshot().world.environment;
+            const fact = request === "temperature" ? environment.thermal_condition
+                : request === "brightness" ? environment.lighting_condition : null;
+            return { resource: request, status: fact?.status ?? "unavailable",
+                result: fact?.status === "known" ? fact.value : null };
         }
         return buildKernelQueryResult(request);
     },
-    onResult: (text) => recordActivity({ category: "communication", service: "responses", direction: "inbound",
-        title: "Backend result", summary: text }),
+    onResult: (text, { error = false } = {}) => recordActivity({ category: "communication", service: "responses", direction: "inbound",
+        status: error ? "error" : "success", title: error ? "Camera request failed" : "Backend result", summary: text }),
 });
 memoryExtractor = new MemoryExtractor({ config: config.memory.extraction, conversations: conversationStore,
     memory: memoryStore, run: (input) => liveBridge.extract(input),
-    verify: (input) => liveBridge.verify(input),
+    verify: (input) => liveBridge.verify(input), onDiagnostic: logApi,
     onStatus: (status) => {
         broadcastDashboard("memory_extraction", status);
         recordActivity({ category: "memory", service: "kernel", title: "Memory extraction",
@@ -860,11 +891,12 @@ function buildKernelQueryResult(request) {
     const resource = request.params.resource;
     const behavior = behaviorArchitecture.snapshot();
     const result = {
-        state: behavior.state,
+        state: { ...behavior.state, environment: behavior.world.environment },
         world: behavior.world,
         drives: behavior.drives,
         social: socialStore.context(),
-        memory: memoryStore.retrieve(request.params.query ?? "", { limit: config.memory.retrievalLimit }),
+        memory: memoryStore.retrieve(request.params.query ?? "", { limit: config.memory.retrievalLimit })
+            .filter((item) => !hasEnvironmentReading(item.content)),
         action: actionGate.snapshot(),
     }[resource];
     return { resource, result };
@@ -1231,6 +1263,7 @@ if (LIVE_ENABLED) {
         try {
             if (liveService.session && !liveService.session.closeConfirmed) await liveService.stop(liveService.session.token);
             await conversationStore.queue;
+            await apiDiagnostics.queue;
         } finally { kernelServer.close(); process.exit(0); }
     });
 }

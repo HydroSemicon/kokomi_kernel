@@ -44,3 +44,10 @@ test("public web search cannot be combined with control or other requests", () =
     assert.match(protocol.audit({ ...lookup, actions: [{ type: "led_change", params: { color: "#FFFFFF" } }] }, options).reason, /only/u);
     assert.match(protocol.audit({ ...lookup, requests: [...lookup.requests, "temperature"] }, options).reason, /only/u);
 });
+
+test("read-only vision output cannot carry an actuator action", () => {
+    const options = { task: "live_vision" };
+    const description = { turn_id: "vision_1", result: "マグカップがあります。" };
+    assert.equal(protocol.audit(description, options).ok, true);
+    assert.equal(protocol.audit({ ...description, actions: [{ type: "led_change", params: { color: "#FFFFFF" } }] }, options).ok, false);
+});

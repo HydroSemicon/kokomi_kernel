@@ -52,7 +52,7 @@ flowchart TD
 変更前の指示は `prompts/live-conversation.pre-neutral-2026-10-28.md` に元の内容のまま保存した。
 比較時も人格ファイル、`live.voice`、身体状態に応じた追加指示は従来どおり。
 会話指示ファイルだけの編集は、現在の会話を終了して次に開始すると反映される。
-Responses の各依頼には、起動時に読み込んだ `control_prompt.md` を `instructions` として送る。
+Responses の機体制御・画像解析には、起動時に読み込んだ `control_prompt.md` を `instructions` として送る。記憶処理と検索には専用の指示を使う。
 
 `KOKOMI_CONFIG_PATH` で別の設定ファイルを指定できる。隔離起動テストでは一時ファイルを使い、
 実運用の観測・記憶ファイルを変更せず、センサー通信もローカルの偽デバイスへ向ける。
@@ -97,6 +97,10 @@ Responses の各依頼には、起動時に読み込んだ `control_prompt.md` �
 断片は発話確定ではなく、出力側の文字起こしはユーザーが再生を最後まで聞いた証拠でもない。
 
 `session.delegation.created` は委譲 ID と時刻などのメタデータのみで、依頼本文は含まない。
+ダッシュボードでは委譲の受信を `Live delegation requested`、委譲中の処理失敗を `Live delegation failed` として表示する。
+「これ見える？」「これ何かわかる？」などのカメラ質問は、Live の委譲が来ない場合もカーネルが安定した文字起こしから拾う。
+`Camera request accepted` から撮影と読み取り専用の画像解析へ進み、同じ発話に対する後続の委譲では再撮影しない。
+この経路は画像の説明だけを返す。機体を動かす依頼は通常の委譲・監査・ActionGate を通る。
 カーネルは `offset_ms` に対応するユーザー発言を選び、その発言が落ち着くまで待つ。
 その後の別の雑談を、元の依頼の本文に取り違えない。
 期限内に依頼を確定できなければ、実行せず Live に聞き直しを求める。
@@ -108,7 +112,7 @@ Responses の各依頼には、起動時に読み込んだ `control_prompt.md` �
   "type": "session.thinking.append",
   "event_id": "append_unique_id",
   "delegation_id": null,
-  "content": "現在の身体観測: 室温は約25℃。カメラ確認は進行中で、結果は未取得。"
+  "content": "現在の身体観測: 温熱状態は快適。カメラ確認は進行中で、結果は未取得。"
 }
 ```
 
@@ -188,6 +192,8 @@ HTTP 応答ごとに、完了状態・JSON・リクエストの `turn_id` を確
 
 ### 応答形式
 
+以下はカーネルが保存用に復元した形式。API の抽出応答では候補に `evidence_refs`（例 `['u1','u3']`）を付け、引用文や断片IDの配列は出力しない。
+
 ```json
 {
   "turn_id": "memory_job_unique_id",
@@ -246,7 +252,8 @@ HTTP 応答ごとに、完了状態・JSON・リクエストの `turn_id` を確
 4. すべて成功してから処理済み位置を進める。
 
 保存途中で失敗した場合は、同じ準備済み結果と source key を再利用する。
-モデルに違う候補を生成し直して二重適用しない。失敗時はカーソルを進めず、既定30秒後に再試行。
+モデルに違う候補を生成し直して二重適用しない。失敗時はカーソルを進めず、既定では30秒、60秒後に再試行する。3回連続で失敗すると再起動まで自動処理を保留する。
+抽出・検証の入力は同一セッション内の最大16発話グループ。モデルには文字起こし断片のIDを送らず、ユーザー発話ごとの短い参照を渡す。カーネルが参照から保存用の原文引用と代表の断片IDを復元し、既存の根拠検証を適用する。
 同一候補の再適用、近似重複の整理、採否履歴は既存ストアと整合させる。
 ログ末尾だけの書きかけは復旧し、中間の破損は明示的なエラーにする。
 
@@ -262,8 +269,8 @@ HTTP 応答ごとに、完了状態・JSON・リクエストの `turn_id` を確
 ## 8. 身体状態と話し方
 
 身体状態は既定２秒ごとに確認し、説明内容が変わった場合だけ送る。
-室温0.5℃、湿度5%、明るさ10単位の概数と、在室、接触、温熱状態、見えている人物を共有する。
-正確な数値が必要な場合はバックエンドの照会を使う。
+モデルには温熱・明暗の分類と、在室、接触、見えている人物を共有する。数値のセンサー値はカーネル内部とダッシュボードに置く。
+Responses の制御コンテキストとセンサー照会も定性的な値を返す。過去のログや記憶に残る数値の環境描写は、新しい会話の文脈から除外する。
 
 `internal.homeostasis_sample` の `intoxication` を、既定0.2/0.6の境界で話し方の指示へ変換する。
 信号名・境界は設定可能。信号が不明/古い場合は素面と断定せず、普段の話し方を使う。
@@ -279,7 +286,9 @@ HTTP 応答ごとに、完了状態・JSON・リクエストの `turn_id` を確
 | `live.enabled` | true | false で Live 音声を停止。文字入力と推論は使用可能。 |
 | `live.voice` | harema | 日本語の初期音声。次のセッション作成時に反映。 |
 | `memory.extraction.intervalSeconds` | 60 | 定期抽出の予約間隔。 |
-| `memory.extraction.retryIntervalSeconds` | 30 | 抽出失敗後の再試行間隔。 |
+| `memory.extraction.retryIntervalSeconds` | 30 | 初回の再試行間隔。連続失敗で倍増。 |
+| `memory.extraction.maxConsecutiveFailures` | 3 | 再起動まで自動処理を保留する連続失敗数。 |
+| `memory.extraction.maxBatchGroups` | 16 | 同一セッション内で処理する発話グループ数の上限。 |
 | `memory.extraction.flushOnSessionEnd` | true | 会話終了時に残りを抽出。 |
 | `memory.extraction.stableSilenceMs` | 2000 | 最近到着した断片を次回に回す目安。 |
 | `memory.extraction.maxBatchBytes` | 16000 | バッチの目標サイズ。単一の長い発言は文脈を壊さず保持するため超過できる。 |
@@ -329,6 +338,14 @@ HTTP 応答ごとに、完了状態・JSON・リクエストの `turn_id` を確
 ジッタ、バッファ遅延、再生状態を収集し、音声データは保存しない。停止後も次の接続開始まで残す。
 
 ## 11. 検証と制限
+
+API の再現調査には、会話ログと同じフォルダーの `live-api-diagnostics.jsonl` を使う（既定は `data/runtime/`）。
+JSON Lines 形式で、2 MiB ごとに前世代を `.1` に保存する。時刻は UTC。
+`memory.phase` と `memory.failed` を `attemptId` で `responses.started`、`responses.finished`、`responses.audit` と突き合わせると、
+抽出・根拠確認・保存の段階、バッチのサイズ、再試行予定、HTTP ステータスと応答待ちの段階を確認できる。
+`clientRequestId` は送信時に付与し、応答ヘッダーが届けば OpenAI の `requestId` も残す。
+HTTP 200 後にカーネルが応答を拒否した場合、候補ごとの根拠 ID の個数が `responses.audit` に残る。
+会話本文、プロンプト、画像、認証情報、API 応答本文は診断ログに書かない。
 
 自動テストは `npm test`。Responses、Live、カメラ、機体はテスト用の依存先に差し替える。
 API リクエスト、画像データ、検索出典、無効なターンの操作拒否、訂正時の処理、接続管理、記憶の採否と復旧を検証する。

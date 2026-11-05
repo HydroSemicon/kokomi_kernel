@@ -85,7 +85,7 @@ export class ConversationStore {
         return this.groups(this.entries.filter((entry) => !sessionId || entry.session_id === sessionId)).slice(-limit);
     }
 
-    batch({ stableMs, maxBytes, flush = false }) {
+    batch({ stableMs, maxBytes, maxGroups = Infinity, flush = false }) {
         const pending = this.entries.filter((entry) => entry.seq > this.checkpoint.through);
         const groups = this.groups(pending);
         const selected = [];
@@ -93,7 +93,8 @@ export class ConversationStore {
         for (const group of groups) {
             if (!flush && this.clock() - group.received_at < stableMs) break;
             const bytes = Buffer.byteLength(group.text, "utf8");
-            if (selected.length && size + bytes > maxBytes) break;
+            if (selected.length && (size + bytes > maxBytes || selected.length >= maxGroups
+                || group.session_id !== selected[0].session_id)) break;
             // A single oversized utterance is kept whole so its negation/context is not lost.
             selected.push(group);
             size += bytes;

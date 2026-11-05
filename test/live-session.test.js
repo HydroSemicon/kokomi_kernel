@@ -2,9 +2,11 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import { EventEmitter } from "node:events";
+import { setTimeout as delay } from "node:timers/promises";
 import { LiveSessionService } from "../src/live/session-service.js";
 import { LiveKernelBridge } from "../src/live/kernel-bridge.js";
 import { LiveBrowserClient } from "../dashboard/live-client.js";
+import { bodyContext } from "../src/live/body-context.js";
 
 const config = JSON.parse(await fs.readFile(new URL("../config.json", import.meta.url), "utf8"));
 
@@ -66,6 +68,25 @@ test("Live creation uses client delegation, restricted browser events, and serve
     assert.equal(f.service.snapshot().closeConfirmed, true);
 });
 
+test("Live receives qualitative world state and does not replay prior numerical room readings", async () => {
+    const qualitative = bodyContext({ state: { environment: { temperature: { status: "known", value: 26.42 } },
+        perception: { visible_people: [] }, interaction: {} }, world: { room: {}, environment: {
+        thermal_condition: { status: "known", value: "comfortable" }, lighting_condition: { status: "known", value: "bright" },
+    } }, drives: { external: {} } }, config.live);
+    const f = fixture({ getContext: () => qualitative });
+    f.service.conversations.checkpoint.summary = "前回の室温は26.42℃";
+    f.service.conversations.recent = () => [
+        { role: "assistant", text: "今ね、室温はだいたい二十六度くらい。" },
+        { role: "user", text: "最近は紅茶が好き" },
+    ];
+    const owner = await f.service.start("v=0 offer");
+    const sent = JSON.stringify(JSON.parse(f.requests[0].options.body).session.input);
+    assert.match(sent, /comfortable/u);
+    assert.match(sent, /紅茶/u);
+    assert.doesNotMatch(sent, /26\.42|二十六度/u);
+    await f.service.stop(owner.control_token);
+});
+
 test("sideband open does not send context until media startup is confirmed", async () => {
     const f = fixture({ autoStart: false });
     const owner = await f.service.start("v=0 offer");
@@ -104,6 +125,7 @@ test("rejected commands release nested acknowledgements and preserve audio with 
     assert.ok(!f.logged[0].text.includes("secret-token"));
     assert.equal(f.sockets[0].sent.some((event) => event.type === "session.close"), false);
     await f.service.stop(owner.control_token);
+    assert.equal(f.service.snapshot().contextWarning, null);
     assert.equal(f.service.snapshot().lastEventError.code, "not_started");
 });
 
@@ -197,6 +219,58 @@ test("vision round trips attach the camera image while retaining original action
     assert.equal(await f.bridge.submitContext(root), "机に赤いカップがあります。");
     assert.equal(step, 2);
     assert.equal(f.calls[0][0], "commentary");
+});
+
+test("a camera question without Live delegation captures once and a late delegation cannot repeat it", async () => {
+    const user = { role: "user", text: "これ何かわかる", start_ms: 0, received_at: Date.now() - 10, evidence_event_ids: ["camera_question"] };
+    const session = { id: "live_test", revision: 0 };
+    const spoken = [];
+    const firstImage = Promise.withResolvers();
+    const release = Promise.withResolvers();
+    let captures = 0;
+    const f = bridgeFixture({ config: { ...config.live, delegationQuietMs: 5 },
+        live: { session, isCurrent: () => true, deliverResult: (text, task) => spoken.push({ text, task }) },
+        conversations: { recent: () => [user], append: async () => {} },
+        snapshot: async () => { captures++; firstImage.resolve(); await release.promise; return { mimeType: "image/jpeg" }; },
+        runBackend: async (context, { image }) => {
+            assert.equal(context.task, "live_vision");
+            assert.match(context.response_contract, /read-only/u);
+            assert.equal(image.mimeType, "image/jpeg");
+            return { result: "赤いマグがあります。" };
+        },
+    });
+    f.bridge.observeTranscript({ id: "camera_question", session_id: session.id });
+    await Promise.race([firstImage.promise, delay(100).then(() => assert.ok(captures, "camera fallback did not start"))]);
+    await f.bridge.delegate({ sessionId: session.id, delegationId: "late_vision", offsetMs: 500 });
+    release.resolve();
+    await f.bridge.queue.submit(() => {});
+    assert.equal(captures, 1);
+    assert.equal(spoken[0].text, "赤いマグがあります。");
+    assert.equal(spoken[0].task.delegationId, "late_vision");
+});
+
+test("a native voice delegation still routes a device action through the actuator gate", async () => {
+    const user = { role: "user", text: "LEDを赤くして", start_ms: 0, received_at: Date.now() - 3000, evidence_event_ids: ["led_request"] };
+    const action = { type: "led_change", params: { color: "#FF0000" } };
+    let executed = false;
+    const f = bridgeFixture({ conversations: { recent: () => [user], append: async () => {} },
+        buildContext: async ({ type, payload }) => ({ turn_id: "led_turn", trigger: { type, payload } }),
+        runBackend: async (context) => {
+            assert.equal(context.task, "live_control");
+            assert.equal(context.trigger.payload.text, user.text);
+            return { actions: [action] };
+        },
+        executeAction: async (received, options) => {
+            assert.deepEqual(received, action);
+            assert.equal(options.turnId, "led_turn");
+            assert.equal(options.valid(), true);
+            executed = true;
+            return { action_type: "led_change", status: "succeeded" };
+        },
+    });
+    await f.bridge.delegate({ sessionId: "live_test", delegationId: "native_led", offsetMs: 500 });
+    assert.equal(executed, true);
+    assert.match(f.calls[0][1], /succeeded/u);
 });
 
 test("actual failed action outcomes override optimistic backend wording", async () => {

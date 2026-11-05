@@ -1,3 +1,5 @@
+import { hasEnvironmentReading } from "./environment-text.js";
+
 export class ContextComposer {
     constructor({ persona = {}, protocolVersion = "1.2" } = {}) {
         this.persona = persona;
@@ -18,7 +20,8 @@ export class ContextComposer {
             world: projectWorld(world),
         };
 
-        if (memories.length > 0) context.memory = memories.map(compactMemory);
+        const qualitativeMemories = memories.filter((memory) => !hasEnvironmentReading(memory.content));
+        if (qualitativeMemories.length > 0) context.memory = qualitativeMemories.map(compactMemory);
         const compactSocialState = compactSocial(social);
         if (Object.keys(compactSocialState).length > 0) context.social = compactSocialState;
         const compactDriveState = compactDrives(drives);
@@ -84,7 +87,7 @@ function compactTrigger(trigger) {
     const compact = {
         id: trigger.id,
         type: trigger.type,
-        payload: compactPayload(trigger.payload),
+        payload: trigger.type.startsWith("sensor.") ? {} : compactPayload(trigger.payload),
     };
     if (trigger.type !== "interaction.user_input") compact.at = trigger.observed_at;
     return compact;
@@ -120,12 +123,6 @@ function projectState(state) {
     }
 
     return {
-        environment: {
-            temperature_c: projectFact(state.environment.temperature),
-            humidity_percent: projectFact(state.environment.humidity),
-            pressure_hpa: projectFact(state.environment.pressure),
-            brightness_raw: projectFact(state.environment.brightness),
-        },
         perception,
         interaction,
     };

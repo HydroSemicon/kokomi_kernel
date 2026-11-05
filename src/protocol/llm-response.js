@@ -127,6 +127,11 @@ export class LlmResponseProtocol {
         if (typeof payload.turn_id !== "string" || !/^[A-Za-z0-9_.:-]{1,128}$/u.test(payload.turn_id)) {
             return { ok: false, reason: "turn_id must match a pending cognitive context" };
         }
+        if (task === "live_vision") {
+            return hasExactlyKeys(payload, ["turn_id", "result"]) && typeof payload.result === "string"
+                && Boolean(payload.result.trim()) && payload.result.length <= 2000
+                ? { ok: true, payload } : { ok: false, reason: "vision must return only a bounded description" };
+        }
         if (task === "live_memory") {
             if (!hasExactlyKeys(payload, ["turn_id", "memory_extraction"])) {
                 return { ok: false, reason: "memory extraction cannot contain speech, actions, or requests" };

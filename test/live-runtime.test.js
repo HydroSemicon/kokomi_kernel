@@ -114,6 +114,9 @@ test("typed control uses Responses, attaches a snapshot, rejects mismatched turn
                 else payload.result = "赤いマグがあります。";
             } else if (ctx.trigger.payload.text === "公開情報を調べて") {
                 payload.requests.push({ type: "web_search", params: { query: "公開情報" } });
+            } else if (ctx.trigger.payload.text === "室温を確認して") {
+                if (!ctx.request_results) payload.requests.push("temperature", { type: "kernel_query", params: { resource: "state", query: null } });
+                else payload.result = "室内は快適です。";
             } else {
                 if (ctx.trigger.payload.text !== "LEDを白にして") payload.turn_id = "unrelated_turn";
                 payload.actions.push({ type: "led_change", params: { color: "#FFFFFF" } });
@@ -142,6 +145,12 @@ test("typed control uses Responses, attaches a snapshot, rejects mismatched turn
     assert.equal(actionCalls, 1);
     assert.equal((await (await send("公開情報を調べて")).json()).result, "公開資料で確認できました。");
     assert.equal(sent.at(-1).body.input, "公開情報");
+    assert.equal((await send("室温を確認して")).status, 200);
+    const followup = JSON.parse(sent.at(-1).body.input[0].content[0].text);
+    assert.equal(followup.state.environment, undefined);
+    assert.ok(!Object.hasOwn(followup.request_results[0], "unit"));
+    assert.ok([null, "comfortable"].includes(followup.request_results[0].result));
+    assert.ok(!Object.hasOwn(followup.request_results[1].result.environment, "temperature"));
     const status = await (await fetch(`${base}/api/dashboard/status`)).json();
     assert.deepEqual(status.activity.find((entry) => entry.title === "Web search result").sources,
         [{ url: "https://example.com/result", title: "公開資料" }]);

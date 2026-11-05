@@ -89,7 +89,7 @@ export class SocialStateStore {
                 });
             }
         }
-        if (["interaction.user_input", "touch.petting_started"].includes(observation.type)) {
+        if (["interaction.user_input", "interaction.live_activity", "touch.petting_started"].includes(observation.type)) {
             this.lastInteractionAt = observation.observed_at;
         }
     }

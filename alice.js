@@ -13,6 +13,7 @@ import "dotenv/config";
 import { BehaviorArchitecture } from "./src/behavior/index.js";
 import { observationSearchText } from "./src/behavior/observation.js";
 import { MemoryStore } from "./src/memory/memory-store.js";
+import { normalizeExistingMemories } from "./src/memory/normalize-existing.js";
 import { EventStore } from "./src/behavior/event-store.js";
 import { ActionGate } from "./src/behavior/action-gate.js";
 import { SocialStateStore } from "./src/social/social-state-store.js";
@@ -29,8 +30,20 @@ import { AudioOutputLifecycle } from "./src/speech/audio-output-lifecycle.js";
 import { loadFillerManifest } from "./src/speech/filler-manifest.js";
 import { LocalClipPlayer } from "./src/speech/local-clip-player.js";
 import { FillerController } from "./src/speech/filler-controller.js";
+import WebSocket from "ws";
+import { ConversationStore } from "./src/live/conversation-store.js";
+import { LiveSessionService, LiveError } from "./src/live/session-service.js";
+import { LiveKernelBridge } from "./src/live/kernel-bridge.js";
+import { MemoryExtractor } from "./src/live/memory-extractor.js";
+import { mountLiveRoutes } from "./src/live/http-routes.js";
+import { fitText } from "./src/live/text-budget.js";
+import { bodyContext } from "./src/live/body-context.js";
+import { sendBrowserJson } from "./src/browser/chat-input.js";
+import { BrowserBackend } from "./src/live/browser-backend.js";
+import { chatOutputMonitor } from "./src/browser/output-monitor.js";
 
-const config = JSON.parse(fs.readFileSync(new URL("./config.json", import.meta.url), "utf8"));
+const config = JSON.parse(fs.readFileSync(process.env.KOKOMI_CONFIG_PATH
+    ? path.resolve(process.env.KOKOMI_CONFIG_PATH) : new URL("./config.json", import.meta.url), "utf8"));
 
 puppeteer.use(StealthPlugin());
 
@@ -44,9 +57,10 @@ const SENSOR_UNITS = config.sensors.units;
 --------------------------- */
 const TOUCH_SENSOR_BINDINGS = config.touch.sensorBindings;
 
-const TTS_ENABLED = config.tts.enabled;
-const ASR_ENABLED = config.asr.enabled;
-const FILLER_ENABLED = config.filler.enabled;
+const LIVE_ENABLED = config.live?.enabled === true;
+const TTS_ENABLED = config.tts.enabled && !LIVE_ENABLED;
+const ASR_ENABLED = config.asr.enabled && !LIVE_ENABLED;
+const FILLER_ENABLED = config.filler.enabled && !LIVE_ENABLED;
 const ELEVENLABS_VOICE_ID = process.env.ELEVENLABS_VOICE_ID || config.tts.defaultVoiceId;
 const ELEVENLABS_MODEL_ID = process.env.ELEVENLABS_MODEL_ID || config.tts.defaultModelId;
 const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY;
@@ -61,7 +75,8 @@ const behaviorArchitecture = new BehaviorArchitecture({
 const memoryStore = new MemoryStore({
     filePath: path.resolve(repositoryDirectory, config.memory.storagePath),
 });
-const memoryReady = memoryStore.initialize();
+const memoryReady = memoryStore.initialize().then(() => LIVE_ENABLED
+    ? normalizeExistingMemories(memoryStore, path.resolve(repositoryDirectory, config.live.conversationPath)) : undefined);
 const eventStore = new EventStore({
     filePath: path.resolve(repositoryDirectory, config.persistence.eventLogPath),
     maxReplayEvents: config.persistence.maxReplayEvents,
@@ -126,6 +141,22 @@ if ((TTS_ENABLED || ASR_ENABLED) && !ELEVENLABS_API_KEY) {
 let latestSensor = {};
 let page = null;
 let chatOperationQueue = Promise.resolve();
+let liveService = null;
+let liveBridge = null;
+let memoryExtractor = null;
+let lastMemoryTickAt = Date.now();
+const liveBackendPending = new Map();
+const browserBackend = new BrowserBackend({
+    enqueue: enqueueChatOperation, send: sendJsonToChatGPTNow,
+    loadInstructions: () => fs.promises.readFile(new URL("./control_prompt.md", import.meta.url), "utf8"),
+    attachImage: attachImageToChatGPT, cleanupImage: scheduleVisionTempFileCleanup,
+    turns: turnRegistry, pending: liveBackendPending, responseTimeoutMs: config.live.backendResponseTimeoutMs,
+});
+const conversationStore = new ConversationStore({
+    filePath: path.resolve(repositoryDirectory, config.live.conversationPath),
+    checkpointPath: path.resolve(repositoryDirectory, config.live.checkpointPath),
+});
+const conversationReady = LIVE_ENABLED ? conversationStore.initialize() : Promise.resolve();
 let blueskyAgent = null;
 let blueskyLoginPromise = null;
 const processedVisionEventIds = new Set();
@@ -161,6 +192,16 @@ async function sendObservationToChatGPT(input, options) {
 }
 
 async function dispatchCognitiveContext(context, { releaseLeaseOnFailure = true } = {}) {
+    if (LIVE_ENABLED) {
+        liveBridge.submitContext(context).then(() => {
+            behaviorArchitecture.acknowledgeProposalLease(context.turn_id);
+        }).catch((error) => {
+            if (releaseLeaseOnFailure) behaviorArchitecture.releaseProposalLease(context.turn_id);
+            recordActivity({ category: "communication", status: "error", title: "Backend request failed",
+                summary: error.message, service: "chatgpt" });
+        });
+        return context;
+    }
     turnRegistry.register(context);
     try {
         await sendJsonToChatGPT(context);
@@ -183,6 +224,8 @@ const recentActivity = [];
 let activitySequence = 0;
 
 const serviceState = {
+    live: { status: LIVE_ENABLED ? "idle" : "disabled", label: "Live conversation",
+        detail: LIVE_ENABLED ? (process.env.OPENAI_API_KEY ? "Start from the dashboard" : "Set OPENAI_API_KEY") : "Disabled in config" },
     kernel: { status: "online", label: "Kernel API", detail: `Port ${config.server.port}` },
     chatgpt: { status: "checking", label: "ChatGPT bridge", detail: "Connecting to browser" },
     bme280: { status: "checking", label: "Environment sensor", detail: "Waiting for first sample" },
@@ -379,9 +422,16 @@ function publicDashboardState() {
             playback: playbackCoordinator.snapshot(),
             filler: fillerController.snapshot(),
         },
+        live: liveService?.snapshot() ?? { status: "idle" },
         persistence: eventStore.snapshot(),
         activity: recentActivity.slice(0, 60),
         capabilities: {
+            memoryEndpoint: config.routes.memoryProposals,
+            live: { enabled: LIVE_ENABLED, iceTimeoutMs: config.live.iceTimeoutMs,
+                silenceWarningSeconds: config.live.silenceWarningSeconds,
+                silenceWarningRepeatSeconds: config.live.silenceWarningRepeatSeconds,
+                silenceAudioLevel: config.live.silenceAudioLevel, audioStatsIntervalMs: config.live.audioStatsIntervalMs,
+                ready: Boolean(process.env.OPENAI_API_KEY) },
             ttsEnabled: TTS_ENABLED,
             asrEnabled: ASR_ENABLED,
             asr: publicAsrClientConfig(),
@@ -605,6 +655,95 @@ const asrTranscriptService = new AsrTranscriptService({
 /* ---------------------------
    BME280 polling
 --------------------------- */
+function liveBodyContext() {
+    return bodyContext(behaviorArchitecture.snapshot(), config.live);
+}
+
+liveService = new LiveSessionService({
+    config: config.live,
+    apiKey: process.env.OPENAI_API_KEY,
+    fetchImpl: fetch,
+    socketFactory: (url, options) => new WebSocket(url, options),
+    conversations: conversationStore,
+    memory: memoryStore,
+    bootstrap: async () => {
+        const [instructions, persona] = await Promise.all([
+            fs.promises.readFile(path.resolve(repositoryDirectory, config.live.instructionsPath), "utf8"),
+            fs.promises.readFile(path.resolve(repositoryDirectory, process.env.KOKOMI_PERSONA_PATH || config.live.personaPath), "utf8"),
+        ]);
+        const prompt = `${instructions}\n${persona}`;
+        if (Buffer.byteLength(prompt, "utf8") > 16384) throw new LiveError(503, "Live persona/instructions exceed the conservative startup budget");
+        return prompt;
+    },
+    getContext: liveBodyContext,
+    onDelegation: (task) => liveBridge.delegate(task),
+    onTranscript: (entry) => {
+        if (entry.role !== "user") return;
+        // Update interaction recency without turning every transcript fragment into an LLM request.
+        return ingestObservation({ id: entry.id, type: "interaction.live_activity", source: "live",
+            payload: { session_id: entry.session_id } }, { persist: false });
+    },
+    onStatus: (status) => {
+        if (status.status === "active") lastMemoryTickAt = Date.now();
+        updateService("live", { status: status.contextWarning ? "degraded" : status.status === "active" ? "online"
+            : status.status === "error" ? "degraded" : status.status,
+        label: "Live conversation", detail: status.lastError || status.contextWarning || status.status });
+        broadcastDashboard("live", status);
+    },
+    onFlush: () => {
+        if (config.memory.extraction.flushOnSessionEnd) memoryExtractor?.tick({ flush: true });
+    },
+});
+liveBridge = new LiveKernelBridge({
+    config: config.live, live: liveService, conversations: conversationStore, memory: memoryStore,
+    buildContext: buildCognitiveContext, runBackend: runBrowserBackend,
+    executeAction: executeGatedAction, snapshot: fetchVisionSnapshot,
+    onRemember: () => memoryExtractor.tick({ flush: true }),
+    query: async (request) => {
+        if (typeof request === "string") {
+            const fact = behaviorArchitecture.snapshot().state.environment[request];
+            return { resource: request, status: fact?.status ?? "unknown",
+                result: fact?.status === "known" ? fact.value : null, unit: SENSOR_UNITS[request] };
+        }
+        return buildKernelQueryResult(request);
+    },
+    onResult: (text) => recordActivity({ category: "communication", service: "chatgpt",
+        title: "Backend result", summary: text }),
+});
+memoryExtractor = new MemoryExtractor({ config: config.memory.extraction, conversations: conversationStore,
+    memory: memoryStore, run: (input) => liveBridge.extract(input),
+    verify: (input) => liveBridge.verify(input),
+    onStatus: (status) => {
+        broadcastDashboard("memory_extraction", status);
+        recordActivity({ category: "memory", service: "kernel", title: "Memory extraction",
+            status: status.status === "error" ? "error" : "success", summary: status.message || status.status });
+    },
+});
+if (LIVE_ENABLED) {
+    let liveTickRunning = false;
+    Promise.all([runtimeReady, conversationReady]).then(() => {
+        if (conversationStore.snapshot().pendingFragments) memoryExtractor.tick({ flush: true });
+    }).catch((error) => console.error("Live state initialization failed:", error.message));
+    const liveTimer = setInterval(async () => {
+        if (liveTickRunning) return;
+        liveTickRunning = true;
+        try {
+            await Promise.all([runtimeReady, conversationReady]);
+            await liveService.tick();
+            if (memoryExtractor.flushRequested || (liveService.status === "active"
+                && Date.now() - lastMemoryTickAt >= config.memory.extraction.intervalSeconds * 1000)
+                || (memoryExtractor.retryAfter && Date.now() >= memoryExtractor.retryAfter)) {
+                lastMemoryTickAt = Date.now();
+                // Do not await the browser backend in the session heartbeat loop.
+                memoryExtractor.tick();
+            }
+        } catch (error) {
+            console.error("Live maintenance failed:", error.message);
+        } finally { liveTickRunning = false; }
+    }, config.live.stateSyncIntervalMs);
+    liveTimer.unref();
+}
+
 async function pollSensor() {
     const startedAt = Date.now();
     try {
@@ -792,7 +931,7 @@ function validateProposalEvidence(payload) {
     ];
     for (const proposal of proposals) {
         for (const eventId of proposal.evidence_event_ids) {
-            if (!eventStore.has(eventId)) return `proposal evidence event does not exist: ${eventId}`;
+            if (!eventStore.has(eventId) && !conversationStore.has(eventId)) return `proposal evidence event does not exist: ${eventId}`;
         }
     }
     return null;
@@ -801,38 +940,23 @@ function validateProposalEvidence(payload) {
 /* ---------------------------
    Kernel output
 --------------------------- */
+function runBrowserBackend(context, options) {
+    return browserBackend.run(context, options);
+}
+
 function enqueueChatOperation(operation) {
     const queued = chatOperationQueue.then(operation);
     chatOperationQueue = queued.catch(() => {});
     return queued;
 }
 
-async function sendJsonToChatGPTNow(obj) {
-    if (!page) {
-        throw new Error("ChatGPT page is not ready");
-    }
-    const json = JSON.stringify(obj);
-
-    await page.waitForSelector(CHAT_INPUT_SELECTOR, { timeout: config.browser.inputTimeoutMs });
-    const existingText = await page.$eval(
-        CHAT_INPUT_SELECTOR,
-        (element) => ("value" in element ? element.value : element.innerText) || "",
-    );
-    if (existingText.trim()) {
-        await page.click(CHAT_INPUT_SELECTOR);
-        await page.keyboard.down("Control");
-        await page.keyboard.press("A");
-        await page.keyboard.up("Control");
-        await page.keyboard.press("Backspace");
-    }
-    await page.type(CHAT_INPUT_SELECTOR, json, { delay: config.browser.typeDelayMs });
-    await page.waitForSelector(config.browser.enabledSendButtonSelector);
-    await page.click(config.browser.sendButtonSelector);
+async function sendJsonToChatGPTNow(obj, { isValid = () => true } = {}) {
+    const { bytes } = await sendBrowserJson(page, obj, { config: config.browser, isValid });
 
     console.log("ChatGPT JSON sent:", {
         turn_id: obj.turn_id ?? null,
         trigger_type: obj.trigger?.type ?? obj.type,
-        bytes: Buffer.byteLength(json, "utf8"),
+        bytes,
     });
 }
 
@@ -1477,7 +1601,9 @@ async function executeAuditedPayload(payload, { context } = {}) {
    YOLO event listener
 --------------------------- */
 const app = express();
-app.use(express.json());
+app.use(express.json({ limit: "128kb" }));
+mountLiveRoutes(app, { service: liveService, config: config.live,
+    ready: Promise.all([runtimeReady, conversationReady]) });
 
 app.use((req, res, next) => {
     if (!endpointState.has(req.path)) return next();
@@ -1533,6 +1659,7 @@ app.post(config.routes.asrToken, async (req, res) => {
 });
 
 app.post(config.routes.asrTranscript, async (req, res) => {
+    if (LIVE_ENABLED) return res.status(409).json({ error: "Use the Live conversation controls" });
     if (!ASR_ENABLED) return res.status(503).json({ error: "ASR is disabled" });
     try {
         await runtimeReady;
@@ -1820,7 +1947,8 @@ app.post(`${config.routes.socialProposals}/:id/decision`, async (req, res) => {
     }
 });
 
-app.listen(config.server.port, () => {
+const kernelServer = app.listen(config.server.port, () => {
+    console.log(`Kernel HTTP port: ${kernelServer.address().port}`);
     console.log(`YOLO event server listening on :${config.server.port}`);
     recordActivity({
         category: "system",
@@ -1830,6 +1958,15 @@ app.listen(config.server.port, () => {
         service: "kernel",
     });
 });
+
+if (LIVE_ENABLED) {
+    for (const signal of ["SIGINT", "SIGTERM"]) process.once(signal, async () => {
+        try {
+            if (liveService.session && !liveService.session.closeConfirmed) await liveService.stop(liveService.session.token);
+            await conversationStore.queue;
+        } finally { kernelServer.close(); process.exit(0); }
+    });
+}
 
 if (config.behavior.spontaneous.enabled && config.behavior.spontaneous.armed) {
     let spontaneousTickRunning = false;
@@ -1991,8 +2128,9 @@ async function runLLaVA(prompt) {
                 continue;
             }
 
-            const audit = responseProtocol.audit(payload);
+            const audit = responseProtocol.audit(payload, { task: turnContext.task });
             if (!audit.ok) {
+                liveBackendPending.get(payload.turn_id)?.reject(new Error(audit.reason));
                 console.log("rejected JSON:", audit.reason, payload);
                 recordActivity({
                     category: "audit",
@@ -2008,6 +2146,7 @@ async function runLLaVA(prompt) {
 
             const evidenceError = validateProposalEvidence(audit.payload);
             if (evidenceError) {
+                liveBackendPending.get(payload.turn_id)?.reject(new Error(evidenceError));
                 recordActivity({
                     category: "audit",
                     status: "error",
@@ -2021,6 +2160,12 @@ async function runLLaVA(prompt) {
             }
 
             turnRegistry.consume(payload.turn_id);
+            const waitingLive = liveBackendPending.get(payload.turn_id);
+            if (waitingLive) {
+                liveBackendPending.delete(payload.turn_id);
+                waitingLive.resolve(audit.payload);
+                continue;
+            }
             await fillerController.markResponseReady(payload.turn_id);
             console.log("accepted JSON:", audit.payload);
             recordActivity({
@@ -2036,64 +2181,12 @@ async function runLLaVA(prompt) {
         }
     });
 
-    const startupAssistantTurnBoundary = await page.evaluate(({ assistantOutputSelector, outputPollIntervalMs }) => {
-        const lastContents = new Map();
-
-        function getMessageIdentity(container) {
-            const message = container.closest('[data-message-author-role="assistant"]');
-            const turn = container.closest('[data-testid^="conversation-turn-"]');
-            const turnMatch = turn?.getAttribute("data-testid")?.match(/^conversation-turn-(\d+)$/);
-            if (!message || !turnMatch) return null;
-
-            return {
-                messageId: message.getAttribute("data-message-id") || turnMatch[1],
-                turnIndex: Number(turnMatch[1]),
-            };
-        }
-
-        function getCurrentText(container) {
-            return container.innerText.trim();
-        }
-
-        const initialContainers = [...document.querySelectorAll(assistantOutputSelector)];
-        const startupTurnBoundary = initialContainers.reduce((highestTurn, container) => {
-            const identity = getMessageIdentity(container);
-            if (!identity) return highestTurn;
-
-            lastContents.set(identity.messageId, getCurrentText(container));
-            return Math.max(highestTurn, identity.turnIndex);
-        }, -1);
-
-        function pollTexts() {
-            const containers = document.querySelectorAll(assistantOutputSelector);
-
-            containers.forEach((container) => {
-                const identity = getMessageIdentity(container);
-                if (!identity) return;
-
-                const currentText = getCurrentText(container);
-                const lastText = lastContents.get(identity.messageId) || "";
-
-                if (currentText && currentText !== lastText) {
-                    lastContents.set(identity.messageId, currentText);
-
-                    // ChatGPT lazily prepends historical turns when the user
-                    // scrolls upward. Their DOM nodes are new, but their turn
-                    // indexes are at or below the startup boundary.
-                    if (identity.turnIndex <= startupTurnBoundary) return;
-
-                    window.onPartialOutput(identity.messageId, currentText);
-                }
-            });
-        }
-
-        console.log("ChatGPT output monitor started");
-        setInterval(pollTexts, outputPollIntervalMs);
-        return startupTurnBoundary;
-    }, {
+    const monitorConfig = {
         assistantOutputSelector: config.browser.assistantOutputSelector,
         outputPollIntervalMs: config.browser.outputPollIntervalMs,
-    });
+    };
+    await page.evaluateOnNewDocument(chatOutputMonitor, monitorConfig);
+    const startupAssistantTurnBoundary = await page.evaluate(chatOutputMonitor, monitorConfig);
     console.log("ChatGPT output monitor started after turn:", startupAssistantTurnBoundary);
 })().catch((err) => {
     updateService("chatgpt", { status: "offline", detail: err.message });

@@ -19,6 +19,7 @@ export class DriveSystem {
     observe({ observation }) {
         if ([
             "interaction.user_input",
+            "interaction.live_activity",
             "touch.petting_started",
             "vision.person_recognized",
             "vision.person_enrolled",

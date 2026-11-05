@@ -1,9 +1,9 @@
 {
     "browser": {
         "chatInputSelector": "textarea, div[contenteditable=\"true\"]",
-        "assistantOutputSelector": ".markdown.prose",
-        "sendButtonSelector": "button[data-testid=\"send-button\"]",
-        "enabledSendButtonSelector": "button[data-testid=\"send-button\"]:not([disabled])",
+        "assistantOutputSelector": "[data-chatgpt-search-unit-key$=\":assistant\"], [data-message-author-role=\"assistant\"] .markdown, .markdown.prose",
+        "sendButtonSelector": "button[data-testid=\"send-button\"], form:has([contenteditable=\"true\"]) button[type=\"submit\"]",
+        "enabledSendButtonSelector": "button[data-testid=\"send-button\"]:not([disabled]):not([aria-disabled=\"true\"]), form:has([contenteditable=\"true\"]) button[type=\"submit\"]:not([disabled]):not([aria-disabled=\"true\"])",
         "imageUploadSelector": "input[data-testid=\"upload-photos-input\"]",
         "remoteDebuggingUrl": "http://127.0.0.1:9222",
         "chatgptUrl": "https://chatgpt.com/",
@@ -15,7 +15,7 @@
     },
 
     "audit": {
-        "validTopLevelFields": ["turn_id", "speech", "emotion", "intensity", "actions", "requests", "memory_proposals", "social_proposals"],
+        "validTopLevelFields": ["turn_id", "speech", "emotion", "intensity", "actions", "requests", "memory_proposals", "social_proposals", "result", "memory_extraction", "memory_verification"],
         "maxPendingTurns": 32,
         "pendingTurnTtlMs": 300000,
         "validEmotions": [
@@ -107,7 +107,61 @@
 
     "memory": {
         "storagePath": "./data/runtime/memory.json",
-        "retrievalLimit": 5
+        "retrievalLimit": 5,
+        "extraction": {
+            "enabled": true,
+            "intervalSeconds": 60,
+            "flushOnSessionEnd": true,
+            "retryIntervalSeconds": 30,
+            "stableSilenceMs": 2000,
+            "maxBatchBytes": 16000,
+            "summaryBudgetTokens": 1600
+        }
+    },
+
+    "live": {
+        "enabled": true,
+        "model": "gpt-live-1",
+        "voice": "harema",
+        "apiBaseUrl": "https://api.openai.com/v1/live",
+        "socketBaseUrl": "wss://api.openai.com/v1/live",
+        "instructionsPath": "./prompts/live-conversation.md",
+        "personaPath": "../kokomi-persona/kokomi_origin.md",
+        "conversationPath": "./data/runtime/live-conversations.jsonl",
+        "checkpointPath": "./data/runtime/live-memory-checkpoint.json",
+        "allowedOrigins": ["http://localhost:3000", "http://127.0.0.1:3000", "http://[::1]:3000"],
+        "requestTimeoutMs": 15000,
+        "closeTimeoutMs": 5000,
+        "iceTimeoutMs": 10000,
+        "heartbeatIntervalMs": 5000,
+        "heartbeatTimeoutMs": 20000,
+        "silenceWarningSeconds": 60,
+        "silenceWarningRepeatSeconds": 60,
+        "silenceAudioLevel": 0.02,
+        "audioStatsIntervalMs": 1000,
+        "stateSyncIntervalMs": 2000,
+        "maxEventBytes": 1048576,
+        "maxPendingAppends": 32,
+        "initialContextBudgetTokens": 6000,
+        "initialHistoryMessages": 24,
+        "updateBudgetTokens": 450,
+        "retrievalLimit": 5,
+        "retrievalHistoryMessages": 4,
+        "backendHistoryMessages": 12,
+        "backendInputBudgetTokens": 8000,
+        "backendResponseTimeoutMs": 120000,
+        "maxBackendSteps": 4,
+        "delegationQuietMs": 1200,
+        "delegationContextTimeoutMs": 15000,
+        "delegationTtlMs": 300000,
+        "intoxicationSignal": "intoxication",
+        "quantization": {
+            "temperatureC": 0.5,
+            "humidityPercent": 5,
+            "brightnessRaw": 10,
+            "lightIntoxication": 0.2,
+            "moderateIntoxication": 0.6
+        }
     },
 
     "social": {

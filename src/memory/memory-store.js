@@ -108,16 +108,20 @@ export class MemoryStore {
         }
     }
 
-    async addProposals(proposals, { source = "llm" } = {}) {
+    async addProposals(proposals, { source = "llm", sourceKey = null, evidence = null, verified = false } = {}) {
         const validationError = validateMemoryProposals(proposals);
         if (validationError) throw new TypeError(validationError);
         const now = new Date(this.clock()).toISOString();
+        const existing = sourceKey && this.records.find((record) => record.source_key === sourceKey);
+        if (existing) { await this.#persist(); return [{ ...existing }]; }
         const added = proposals.map((proposal) => ({
             id: `memory_${randomUUID()}`,
             ...proposal,
             subject: proposal.subject.trim(),
             content: proposal.content.trim(),
             source,
+            ...(sourceKey ? { source_key: sourceKey } : {}),
+            ...(evidence ? { evidence, normalization_version: 2, semantic_verification: verified ? "supported" : "unverified" } : {}),
             session_id: this.sessionId,
             status: "pending",
             created_at: now,
@@ -141,6 +145,35 @@ export class MemoryStore {
         record.status = decision;
         record.decided_at = new Date(this.clock()).toISOString();
         if (decision === "accepted") record.consolidated_ids = this.#consolidate(record);
+        await this.#persist();
+        return { ...record };
+    }
+
+    async normalizeAccepted({ id, proposal, evidence, supersedes }) {
+        const validationError = validateProposal(proposal);
+        if (validationError) throw new TypeError(validationError);
+        const sourceKey = `memory-normalization-v2:${id}`;
+        const existing = this.records.find((record) => record.source_key === sourceKey);
+        if (existing) { await this.#persist(); return { ...existing }; }
+        if (!Array.isArray(supersedes) || !supersedes.length || new Set(supersedes).size !== supersedes.length) {
+            throw new TypeError("Normalization must identify its original records");
+        }
+        const originals = supersedes.map((recordId) => this.records.find((record) => record.id === recordId));
+        if (originals.some((record) => !record || record.status !== "accepted" || record.source !== "live_memory_extraction"
+            || record.kind !== proposal.kind || record.subject !== proposal.subject || record.retention !== proposal.retention
+            || !record.evidence_event_ids.every((eventId) => proposal.evidence_event_ids.includes(eventId)))) {
+            throw new TypeError("Normalization must preserve accepted Live records and their evidence");
+        }
+        const now = new Date(this.clock()).toISOString();
+        const record = { id: `memory_${randomUUID()}`, ...proposal, evidence, normalization_version: 2,
+            semantic_verification: "reviewed-normalization", source: "live_memory_normalization", source_key: sourceKey,
+            session_id: this.sessionId, status: "accepted", created_at: now, decided_at: now, consolidated_ids: supersedes };
+        for (const original of originals) {
+            original.status = "superseded";
+            original.superseded_by = record.id;
+            original.superseded_at = now;
+        }
+        this.records.push(record);
         await this.#persist();
         return { ...record };
     }
@@ -205,7 +238,7 @@ export class MemoryStore {
     async #persist() {
         if (!this.filePath) return;
         const body = JSON.stringify({ schema_version: "1.0", records: this.records }, null, 2);
-        this.writeQueue = this.writeQueue.then(async () => {
+        this.writeQueue = this.writeQueue.catch(() => {}).then(async () => {
             const directory = path.dirname(this.filePath);
             await fs.mkdir(directory, { recursive: true });
             const temporaryPath = `${this.filePath}.${process.pid}.tmp`;

@@ -1,10 +1,12 @@
 import { AliceAsrClient } from "/dashboard/asr-client.js";
+import { LiveBrowserClient } from "/dashboard/live-client.js";
 
 const state = {
     snapshot: null,
     filter: "all",
     streamConnected: false,
 };
+let liveClient = null;
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
@@ -375,6 +377,16 @@ function updateMicrophoneUi(asrState, message) {
 }
 
 function renderMicrophoneAvailability(snapshot) {
+    const live = snapshot.capabilities?.live;
+    $("#live-controls").hidden = !live?.enabled;
+    if (live?.enabled) {
+        if (liveClient) Object.assign(liveClient.config, live);
+        $("#microphone-button").disabled = true;
+        $("#live-start").disabled = !live.ready || Boolean(liveClient?.active || liveClient?.starting || liveClient?.closing || liveClient?.owner);
+        if (!live.ready) $("#live-status").textContent = "サーバーに OPENAI_API_KEY を設定してください";
+        $("#microphone-status").textContent = "会話開始・終了は Live のボタンで操作します";
+        return;
+    }
     if (microphoneClient?.isStarted) return;
     const capability = snapshot.capabilities?.asr;
     const enabled = typeof capability === "object"
@@ -388,6 +400,38 @@ function renderMicrophoneAvailability(snapshot) {
 }
 
 function bindMicrophone() {
+    liveClient = new LiveBrowserClient({
+        config: { iceTimeoutMs: state.snapshot?.capabilities?.live?.iceTimeoutMs ?? 10000 },
+        onSilenceWarning: ({ silentSeconds, soundPlayed }) => {
+            const message = `${silentSeconds}秒間音声がありません。Live は接続中です。使い終わったら「会話終了」を押してください。`;
+            showToast("Live の切断し忘れ確認", message, true);
+            $("#live-status").textContent = message;
+            console.warn("[Live silence]", message, { soundPlayed });
+            if (!soundPlayed) {
+                $("#live-audio-resume").hidden = false;
+                $("#live-status").textContent += " 警告音を有効にするには「音声再生を許可」を押してください。";
+            }
+        },
+        onStatus: (status, message) => {
+            $("#live-status").textContent = message;
+            $("#live-start").disabled = ["connecting", "active", "closing", "playback_blocked", "warning"].includes(status);
+            $("#live-stop").disabled = status === "idle";
+            $("#live-audio-resume").hidden = status !== "playback_blocked";
+        },
+        onTranscript: (role, delta) => {
+            const transcript = $("#live-transcript");
+            const prefix = transcript.dataset.role === role ? "" : `\n${role === "user" ? "あなた" : "心海"}: `;
+            transcript.dataset.role = role;
+            transcript.textContent = (transcript.textContent + prefix + delta).slice(-6000);
+            transcript.scrollTop = transcript.scrollHeight;
+        },
+    });
+    $("#live-start").addEventListener("click", () => liveClient.start().catch((error) => {
+        showToast("Live を開始できません", error.message, true);
+    }));
+    $("#live-stop").addEventListener("click", () => liveClient.stop());
+    $("#live-audio-resume").addEventListener("click", () => liveClient.resumeAudio());
+    window.addEventListener("pagehide", () => liveClient.pageHide());
     const input = $("#message-input");
     const button = $("#microphone-button");
     microphoneClient = new AliceAsrClient({
@@ -473,7 +517,7 @@ function bindForms() {
         const text = $("#message-input").value.trim();
         if (!text) return showToast("入力が必要です", "メッセージを入力してください", true);
         try {
-            await postJson("/user_input", { text }, event.submitter || $("#message-form button"));
+            await postJson("/user_input", { text }, event.submitter || $('#message-form button[type="submit"]'));
             $("#message-input").value = "";
             showToast("送信しました", "ChatGPTブリッジへ入力を渡しました");
         } catch (error) {
@@ -555,6 +599,42 @@ function updateClock() {
         $$(".activity-time").forEach((node) => { node.textContent = formatRelative(node.dateTime); });
     }
 }
+
+async function listLongTermMemory({ status = "accepted" } = {}) {
+    const query = status === "all" ? "" : `?status=${encodeURIComponent(status)}`;
+    const response = await fetch((state.snapshot?.capabilities?.memoryEndpoint ?? "/api/memory/proposals") + query,
+        { cache: "no-store" });
+    if (!response.ok) throw new Error(`Memory HTTP ${response.status}`);
+    return (await response.json()).records.filter((record) => record.retention === "long");
+}
+
+async function refreshMemory() {
+    const target = $("#memory-records");
+    try {
+        const records = await listLongTermMemory({ status: $("#memory-status").value });
+        target.replaceChildren();
+        if (!records.length) { target.textContent = "該当する長期記憶はありません。採用待ちは表示を切り替えて確認できます。"; return; }
+        for (const record of records) {
+            const item = document.createElement("div");
+            item.className = "memory-record";
+            const body = document.createElement("p");
+            body.textContent = record.content;
+            const metadata = document.createElement("small");
+            metadata.textContent = `${record.status} / ${record.kind} / ${record.subject} / ${record.created_at} / ${record.id}`;
+            item.append(body, metadata);
+            target.append(item);
+        }
+    } catch (error) { target.textContent = `記憶を取得できません: ${error.message}`; }
+}
+
+window.kokomi = {
+    memory: async (options) => { const records = await listLongTermMemory(options); console.table(records); return records; },
+    liveDiagnostics: () => liveClient?.diagnostics(),
+};
+$("#memory-refresh").addEventListener("click", refreshMemory);
+$("#memory-status").addEventListener("change", refreshMemory);
+refreshMemory();
+setInterval(refreshMemory, 15000);
 
 bindMicrophone();
 bindForms();

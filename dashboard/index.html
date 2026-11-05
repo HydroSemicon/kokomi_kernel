@@ -18,6 +18,7 @@
             <nav class="nav-list">
                 <a class="nav-link active" href="#overview"><span aria-hidden="true">⌂</span>概要</a>
                 <a class="nav-link" href="#cognition"><span aria-hidden="true">◎</span>認知状態</a>
+                <a class="nav-link" href="#memories"><span aria-hidden="true">◇</span>長期記憶</a>
                 <a class="nav-link" href="#communications"><span aria-hidden="true">⇄</span>通信</a>
                 <a class="nav-link" href="#endpoints"><span aria-hidden="true">⌁</span>APIエンドポイント</a>
                 <a class="nav-link" href="#controls"><span aria-hidden="true">◫</span>デバイス操作</a>
@@ -108,6 +109,15 @@
                         <article class="panel composer-panel">
                             <div class="panel-head"><div><p class="eyebrow">USER INPUT</p><h2>ChatGPTへ指示</h2></div><span class="route-label">POST /user_input</span></div>
                             <form id="message-form">
+                                <div id="live-controls" hidden>
+                                    <div class="live-buttons">
+                                        <button id="live-start" type="button" class="button primary">会話開始</button>
+                                        <button id="live-stop" type="button" class="button" disabled>会話終了</button>
+                                        <button id="live-audio-resume" type="button" class="button" hidden>音声再生を許可</button>
+                                    </div>
+                                    <p id="live-status" role="status">会話は停止しています</p>
+                                    <div id="live-transcript" class="live-transcript" aria-label="Live の文字起こし"></div>
+                                </div>
                                 <label for="message-input">メッセージ</label>
                                 <div class="message-input-wrap">
                                     <textarea id="message-input" rows="5" maxlength="2000" placeholder="例：現在の部屋の様子を教えて"></textarea>
@@ -190,6 +200,14 @@
                     </div>
                 </section>
 
+                <section id="memories" class="page-section" aria-labelledby="memory-heading">
+                    <article class="panel">
+                        <div class="panel-head"><div><p class="eyebrow">LONG-TERM MEMORY</p><h2 id="memory-heading">保存済み長期記憶</h2></div>
+                            <label>表示 <select id="memory-status"><option value="accepted">採用済み</option><option value="pending">採用待ち</option><option value="all">すべて</option></select></label>
+                            <button id="memory-refresh" class="button secondary" type="button">記憶を更新</button></div>
+                        <div id="memory-records" class="memory-records" aria-live="polite">読み込み中</div>
+                    </article>
+                </section>
                 <footer><span>Kokomi Kernel Operations Console</span><span id="footer-version">v1.0.0 · localhost</span></footer>
             </div>
         </main>

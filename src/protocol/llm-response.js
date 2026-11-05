@@ -1,5 +1,6 @@
 import { validateMemoryProposals } from "../memory/memory-store.js";
 import { validateSocialProposals } from "../social/social-state-store.js";
+import { validateExtraction, validateVerification } from "../live/memory-extractor.js";
 
 function isPlainObject(value) {
     return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -113,13 +114,36 @@ export class LlmResponseProtocol {
         return null;
     }
 
-    audit(payload) {
+    audit(payload, { task = null } = {}) {
         if (!isPlainObject(payload)) return { ok: false, reason: "payload must be a JSON object" };
         for (const field of Object.keys(payload)) {
             if (!this.validTopLevelFields.has(field)) return { ok: false, reason: `unknown top-level field: ${field}` };
         }
         if (typeof payload.turn_id !== "string" || !/^[A-Za-z0-9_.:-]{1,128}$/u.test(payload.turn_id)) {
             return { ok: false, reason: "turn_id must match a pending cognitive context" };
+        }
+        if (task === "live_memory") {
+            if (!hasExactlyKeys(payload, ["turn_id", "memory_extraction"])) {
+                return { ok: false, reason: "memory extraction cannot contain speech, actions, or requests" };
+            }
+            const error = validateExtraction(payload.memory_extraction);
+            return error ? { ok: false, reason: error } : { ok: true, payload };
+        }
+        if (task === "live_memory_review") {
+            if (!hasExactlyKeys(payload, ["turn_id", "memory_verification"])) {
+                return { ok: false, reason: "memory verification cannot contain other outputs" };
+            }
+            const error = validateVerification(payload.memory_verification);
+            return error ? { ok: false, reason: error } : { ok: true, payload };
+        }
+        if ("memory_verification" in payload) return { ok: false, reason: "unexpected memory verification" };
+        if ("memory_extraction" in payload) return { ok: false, reason: "unexpected memory extraction" };
+        if (task === "live_control" && !hasOnlyKeys(payload, ["turn_id", "result", "actions", "requests"])) {
+            return { ok: false, reason: "live_control cannot contain speech or memory/social proposals" };
+        }
+        if ("result" in payload && (task !== "live_control" || typeof payload.result !== "string"
+            || !payload.result.trim() || payload.result.length > 2000)) {
+            return { ok: false, reason: "result requires a live_control task and 1 to 2000 characters" };
         }
         const speechError = this.#validateSpeech(payload);
         if (speechError) return { ok: false, reason: speechError };
@@ -140,6 +164,7 @@ export class LlmResponseProtocol {
             if (error) return { ok: false, reason: error };
         }
         const effective = Boolean(payload.speech?.trim())
+            || Boolean(payload.result?.trim())
             || (Array.isArray(payload.actions) && payload.actions.length > 0)
             || (Array.isArray(payload.requests) && payload.requests.length > 0);
         return effective

@@ -2,9 +2,11 @@
   "name": "chatgpt_interface",
   "version": "1.0.0",
   "type": "module",
-  "main": "server.js",
+  "main": "alice.js",
   "scripts": {
+    "start": "node alice.js",
     "test": "node --test",
+    "memory:list": "node tools/memory-list.js",
     "generate:fillers": "node archives/tools/generate-fillers.js"
   },
   "dependencies": {

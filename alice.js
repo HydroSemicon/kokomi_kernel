@@ -22,9 +22,17 @@ import { mountLiveRoutes } from "./src/live/http-routes.js";
 import { bodyContext } from "./src/live/body-context.js";
 import { ResponsesBackend } from "./src/live/responses-backend.js";
 import { ApiDiagnostics } from "./src/live/api-diagnostics.js";
+import { CoughDetectionService, mountCoughRoutes } from "./src/perception/cough-service.js";
+import { BeatsCoughBridge, configuredDetectorCommand } from "./src/perception/beats-cough-bridge.js";
 
 const config = JSON.parse(fs.readFileSync(process.env.KOKOMI_CONFIG_PATH
     ? path.resolve(process.env.KOKOMI_CONFIG_PATH) : new URL("./config.json", import.meta.url), "utf8"));
+config.routes.beatsCough ??= "/api/perception/beats/cough";
+config.routes.coughDetection ??= "/api/perception/beats/cough-detection";
+config.routes.beatsHeartbeat ??= "/api/perception/beats/heartbeat";
+if (new Set(Object.values(config.routes)).size !== Object.values(config.routes).length) {
+    throw new Error("Kernel routes must not overlap");
+}
 
 const SENSOR_UNITS = config.sensors.units;
 
@@ -157,8 +165,10 @@ async function submitObservation(input, options) {
     return context;
 }
 
-async function dispatchCognitiveContext(context, { releaseLeaseOnFailure = true, waitForResult = false } = {}) {
-    const job = liveBridge.submitContext(context).then((result) => {
+async function dispatchCognitiveContext(context, { releaseLeaseOnFailure = true, waitForResult = false, valid } = {}) {
+    const submitted = context.trigger.type === "audio.cough_detected"
+        ? liveBridge.submitCoughContext(context, { valid }) : liveBridge.submitContext(context);
+    const job = submitted.then((result) => {
         behaviorArchitecture.acknowledgeProposalLease(context.turn_id);
         return result;
     }).catch((error) => {
@@ -180,6 +190,27 @@ const dashboardDirectory = fileURLToPath(new URL("./dashboard", import.meta.url)
 const dashboardClients = new Set();
 const recentActivity = [];
 let activitySequence = 0;
+let managedCoughBridge;
+const coughService = new CoughDetectionService({
+    config: config.coughDetection,
+    storagePath: path.resolve(repositoryDirectory, config.coughDetection?.storagePath
+        ?? path.join(path.dirname(config.persistence.eventLogPath), "cough-settings.json")),
+    hasObservation: (id) => eventStore.has(id),
+    observe: async (input, { forward, valid }) => {
+        if (forward) {
+            const context = await buildCognitiveContext(input, { consumeProposals: false });
+            await dispatchCognitiveContext(context, { valid });
+        } else await ingestObservation(input, { forcePersist: true });
+    },
+    onChange: (state) => {
+        updateService("beats", { status: !state.enabled ? "disabled" : state.bridge.status === "running" ? "online"
+            : state.bridge.status === "error" ? "degraded" : "idle",
+        detail: !state.enabled ? "Cough detection disabled" : state.bridge.error
+            || (state.bridge.status === "running" ? "BEATs process running (including model loading)" : "Preparing cough detection") });
+        broadcastDashboard("cough_detection", state);
+    },
+});
+const coughReady = coughService.initialize();
 
 const serviceState = {
     live: { status: LIVE_ENABLED ? "idle" : "disabled", label: "Live conversation",
@@ -189,6 +220,7 @@ const serviceState = {
         detail: process.env.OPENAI_API_KEY ? config.responses.model : "Set OPENAI_API_KEY" },
     bme280: { status: "checking", label: "Environment sensor", detail: "Waiting for first sample" },
     brightness: { status: "checking", label: "Brightness sensor", detail: "Waiting for first sample" },
+    beats: { status: "disabled", label: "BEATs cough detection", detail: "Cough detection disabled" },
     actuators: { status: "idle", label: "Actuators", detail: "No command sent yet" },
     vision: { status: "idle", label: "Vision snapshot", detail: "No request sent yet" },
     faceMemory: { status: "idle", label: "Face memory", detail: "No request sent yet" },
@@ -199,6 +231,9 @@ const endpointState = new Map([
     [config.routes.touchSensorInput, { method: "POST", label: "タッチセンサー", calls: 0, errors: 0 }],
     [config.routes.yoloEvent, { method: "POST", label: "人物認識イベント", calls: 0, errors: 0 }],
     [config.routes.audioClassification, { method: "POST", label: "音声分類イベント", calls: 0, errors: 0 }],
+    [config.routes.beatsCough, { method: "POST", label: "BEATs咳検出通知", calls: 0, errors: 0 }],
+    [config.routes.coughDetection, { method: "GET / POST", label: "咳検出ON/OFF", calls: 0, errors: 0, trackActivity: false }],
+    [config.routes.beatsHeartbeat, { method: "POST", label: "BEATsブリッジ状態", calls: 0, errors: 0, trackActivity: false }],
     [config.routes.internalState, { method: "POST", label: "身体内部状態", calls: 0, errors: 0 }],
     [config.routes.behaviorState, { method: "GET", label: "行動状態スナップショット", calls: 0, errors: 0, trackActivity: false }],
     [config.routes.behaviorTick, { method: "POST", label: "自発行動ティック", calls: 0, errors: 0 }],
@@ -330,6 +365,7 @@ function publicDashboardState() {
         services,
         endpoints,
         sensors: publicSensorState(),
+        coughDetection: coughService.snapshot(),
         behavior: dashboardBehaviorSnapshot(),
         memory: {
             pendingProposalCount: memoryStore.list({ status: "pending" }).length,
@@ -345,6 +381,7 @@ function publicDashboardState() {
         activity: recentActivity.slice(0, 60),
         capabilities: {
             memoryEndpoint: config.routes.memoryProposals,
+            coughDetectionEndpoint: config.routes.coughDetection,
             live: { enabled: LIVE_ENABLED, iceTimeoutMs: config.live.iceTimeoutMs,
                 silenceWarningSeconds: config.live.silenceWarningSeconds,
                 silenceWarningRepeatSeconds: config.live.silenceWarningRepeatSeconds,
@@ -982,6 +1019,12 @@ app.use((req, res, next) => {
     return next();
 });
 
+mountCoughRoutes(app, { service: coughService, routes: config.routes,
+    ready: Promise.all([runtimeReady, coughReady]) });
+coughReady.then(() => updateService("beats", { status: coughService.enabled ? "idle" : "disabled",
+    detail: coughService.enabled ? "Preparing cough detection" : "Cough detection disabled" }))
+    .catch((error) => updateService("beats", { status: "degraded", detail: error.message }));
+
 app.use("/dashboard", express.static(dashboardDirectory, {
     extensions: ["html"],
     etag: true,
@@ -992,7 +1035,8 @@ app.get("/", (req, res) => {
     res.redirect("/dashboard/");
 });
 
-app.get("/api/dashboard/status", (req, res) => {
+app.get("/api/dashboard/status", async (req, res) => {
+    await coughReady;
     res.set("Cache-Control", "no-store");
     res.json(publicDashboardState());
 });
@@ -1242,6 +1286,15 @@ app.post(`${config.routes.socialProposals}/:id/decision`, async (req, res) => {
 });
 
 const kernelServer = app.listen(config.server.port, () => {
+    if (config.coughDetection?.managedProcess !== false) {
+        managedCoughBridge = new BeatsCoughBridge({
+            kernelUrl: `http://127.0.0.1:${kernelServer.address().port}`,
+            routes: config.routes,
+            // Resolve artifacts only when the console switch is ON.
+            command: () => configuredDetectorCommand(config, repositoryDirectory),
+        });
+        managedCoughBridge.startPolling();
+    }
     console.log(`Kernel HTTP port: ${kernelServer.address().port}`);
     console.log(`YOLO event server listening on :${config.server.port}`);
     recordActivity({
@@ -1253,15 +1306,16 @@ const kernelServer = app.listen(config.server.port, () => {
     });
 });
 
-if (LIVE_ENABLED) {
-    for (const signal of ["SIGINT", "SIGTERM"]) process.once(signal, async () => {
-        try {
+for (const signal of ["SIGINT", "SIGTERM"]) process.once(signal, async () => {
+    try {
+        await managedCoughBridge?.close();
+        if (LIVE_ENABLED) {
             if (liveService.session && !liveService.session.closeConfirmed) await liveService.stop(liveService.session.token);
             await conversationStore.queue;
             await apiDiagnostics.queue;
-        } finally { kernelServer.close(); process.exit(0); }
-    });
-}
+        }
+    } finally { kernelServer.close(); process.exit(0); }
+});
 
 if (config.behavior.spontaneous.enabled && config.behavior.spontaneous.armed) {
     let spontaneousTickRunning = false;

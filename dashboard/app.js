@@ -15,6 +15,7 @@ const serviceNames = {
     responses: "Responses API",
     bme280: "環境センサー",
     brightness: "照度センサー",
+    beats: "BEATs 咳検出",
     actuators: "アクチュエーター",
     vision: "ビジョン",
     faceMemory: "顔記憶",
@@ -269,11 +270,52 @@ function render(snapshot) {
     state.snapshot = snapshot;
     renderHero(snapshot);
     renderSensors(snapshot);
+    renderCoughDetection(snapshot);
     renderServices(snapshot);
     renderActivity(snapshot);
     renderEndpoints(snapshot);
     renderCognition(snapshot);
     renderLiveAvailability(snapshot);
+}
+
+let coughSaving = false;
+function renderCoughDetection(snapshot) {
+    const cough = snapshot.coughDetection;
+    const toggle = $("#cough-enabled");
+    toggle.disabled = !cough || coughSaving;
+    toggle.checked = cough?.enabled === true;
+    $("#cough-switch-label").textContent = cough?.enabled ? "ON" : "OFF";
+    const bridge = cough?.bridge;
+    $("#cough-status").textContent = !cough?.enabled ? "停止中 · マイクを使用しません"
+        : bridge?.status === "error" ? `検出プロセスのエラー: ${bridge.error || "起動を確認してください"}`
+        : bridge?.status === "running" ? "咳検出プロセス稼働中 · 初回はモデルの読み込みに時間がかかります"
+        : cough?.managedProcess ? "咳検出を起動しています"
+        : "外部の咳検出プロセスを待っています";
+    $("#cough-last-detected").textContent = cough?.lastDetectedAt
+        ? `最終検出 ${formatRelative(cough.lastDetectedAt)} · 今回の起動で ${cough.acceptedCount} 件`
+        : "検出記録はありません";
+}
+
+function bindCoughDetection() {
+    $("#cough-enabled").addEventListener("change", async (event) => {
+        const enabled = event.target.checked;
+        coughSaving = true;
+        event.target.disabled = true;
+        try {
+            const response = await fetch(state.snapshot.capabilities.coughDetectionEndpoint, { method: "POST",
+                headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled }) });
+            const result = await response.json();
+            if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
+            state.snapshot.coughDetection = result;
+            showToast(enabled ? "咳検出をONにしました" : "咳検出をOFFにしました",
+                enabled ? "咳検出を開始します" : "咳検出を停止します");
+        } catch (error) {
+            showToast("咳検出の切り替えに失敗しました", error.message, true);
+        } finally {
+            coughSaving = false;
+            renderCoughDetection(state.snapshot);
+        }
+    });
 }
 
 async function fetchSnapshot({ quiet = false } = {}) {
@@ -320,6 +362,11 @@ function connectEventStream() {
         if (!state.snapshot) return;
         state.snapshot.sensors = JSON.parse(event.data);
         renderSensors(state.snapshot);
+    });
+    stream.addEventListener("cough_detection", (event) => {
+        if (!state.snapshot) return;
+        state.snapshot.coughDetection = JSON.parse(event.data);
+        renderCoughDetection(state.snapshot);
     });
     stream.onerror = () => {
         state.streamConnected = false;
@@ -525,6 +572,7 @@ refreshMemory();
 setInterval(refreshMemory, 15000);
 
 bindLive();
+bindCoughDetection();
 bindForms();
 bindNavigation();
 updateClock();

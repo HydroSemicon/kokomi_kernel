@@ -75,10 +75,13 @@ function compactPayload(value) {
 }
 
 function compactTrigger(trigger) {
+    const payload = trigger.type === "audio.cough_detected"
+        ? { label: "cough", subject: trigger.payload.subject, duration_ms: trigger.payload.duration_ms }
+        : trigger.type.startsWith("sensor.") ? {} : compactPayload(trigger.payload);
     const compact = {
         id: trigger.id,
         type: trigger.type,
-        payload: trigger.type.startsWith("sensor.") ? {} : compactPayload(trigger.payload),
+        payload,
     };
     if (trigger.type !== "interaction.user_input") compact.at = trigger.observed_at;
     return compact;
@@ -93,6 +96,9 @@ function projectState(state) {
     const perception = {
         person_present: projectFact(state.perception.person_present),
     };
+    if (state.perception.last_cough?.status === "known") {
+        perception.last_cough = { ...state.perception.last_cough.value, at: state.perception.last_cough.observed_at };
+    }
     if (state.perception.last_sound.status !== "unknown") {
         perception.last_sound = state.perception.last_sound.status === "known"
             ? compactPayload(state.perception.last_sound.value)

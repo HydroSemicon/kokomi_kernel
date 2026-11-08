@@ -382,7 +382,8 @@ CPU, process lifecycle, and endpoint configuration.
 - High-rate sensor values are checkpointed at one-minute intervals instead of logging every sample.
 - Startup replay is bounded to 20,000 events.
 - Replay rebuilds state without replaying old spontaneous proposals.
-- Incomplete TTS, filler, and action intentions are reconciled into explicit terminal diagnostic states.
+- Incomplete action intentions are reconciled into explicit terminal diagnostic states.
+- Legacy ASR, TTS, and filler events remain readable in historical logs but no longer create runtime voice state. See [the cleanup and recovery notes](docs/legacy-voice-cleanup.md).
 - Accepted memory and social records use separate runtime stores.
 - Runtime data is intentionally excluded from source control.
 

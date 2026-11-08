@@ -79,24 +79,6 @@ const runtimeReady = Promise.all([memoryReady, socialReady, eventReady]).then(as
         if (observation.type === "action.intention") actionGate.restoreIntention(observation.payload);
         if (observation.type === "action.outcome") actionGate.restoreOutcome(observation.payload);
     }
-    const interruptedTts = behaviorArchitecture.reconcileInterruptedTts();
-    if (interruptedTts) {
-        const observation = behaviorArchitecture.observe(
-            interruptedTts,
-            { generateProposals: false },
-        ).observation;
-        socialStore.observe(observation);
-        await eventStore.append(observation, { force: true });
-    }
-    const interruptedFiller = behaviorArchitecture.reconcileInterruptedFiller();
-    if (interruptedFiller) {
-        const observation = behaviorArchitecture.observe(
-            interruptedFiller,
-            { generateProposals: false },
-        ).observation;
-        socialStore.observe(observation);
-        await eventStore.append(observation, { force: true });
-    }
     for (const outcome of actionGate.reconcileInterrupted()) {
         const observation = behaviorArchitecture.observe({
             type: "action.outcome",
@@ -321,16 +303,7 @@ function markEndpointRequest(route, statusCode, durationMs, payload) {
 }
 
 function dashboardBehaviorSnapshot() {
-    const snapshot = behaviorArchitecture.snapshot();
-    const partial = snapshot.state?.interaction?.asr_partial;
-    if (partial?.value?.text) {
-        partial.value = {
-            ...partial.value,
-            text_length: partial.value.text.length,
-        };
-        delete partial.value.text;
-    }
-    return snapshot;
+    return behaviorArchitecture.snapshot();
 }
 
 function publicSensorState() {

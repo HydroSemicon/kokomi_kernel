@@ -63,53 +63,43 @@ test("replayed observations rebuild state without replaying spontaneous proposal
     assert.equal(architecture.peekPendingProposals().length, 0);
 });
 
-test("startup reconciliation persists an interrupted outcome for unfinished TTS playback", async (context) => {
-    const directory = await fs.mkdtemp(path.join(os.tmpdir(), "kokomi-tts-recovery-test-"));
+test("legacy voice records replay without restoring retired state or rewriting history", async (context) => {
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), "kokomi-legacy-voice-test-"));
     context.after(() => fs.rm(directory, { recursive: true, force: true }));
     const filePath = path.join(directory, "observations.jsonl");
-    let nowMs = Date.parse("2026-09-10T00:00:00.000Z");
+    const nowMs = Date.parse("2026-09-10T00:00:00.000Z");
     const store = new EventStore({ filePath, clock: () => nowMs });
-    const original = new BehaviorArchitecture({ clock: () => nowMs }).observe({
-        type: "speech.output_started",
-        source: "tts_adapter",
-        payload: {
-            turn_id: "turn_1",
-            emotion: "calm",
-            intensity: 0.4,
-            provider: "elevenlabs",
-            model_id: "eleven_v3",
-            requested_at: "2026-09-10T00:00:00.000Z",
-            started_at: "2026-09-10T00:00:00.000Z",
-            original_text: "こんにちは",
-            rendered_text: "[calmly] こんにちは",
-            status: "started",
-            error: null,
-        },
-    }, { generateProposals: false }).observation;
-    await store.append(original, { force: true });
-
-    nowMs += 1_000;
+    const envelopes = new BehaviorArchitecture({ clock: () => nowMs });
+    const inputs = [
+        { type: "asr.partial_transcript", source: "asr_bridge",
+            payload: { session_id: "old_session", segment_id: "segment_1", revision: 1, text: "途中" } },
+        { type: "speech.output_started", source: "tts_adapter",
+            payload: { turn_id: "old_turn", provider: "elevenlabs", status: "started" } },
+        { type: "speech.filler_started", source: "filler_generator",
+            payload: { filler_id: "old_filler", status: "started" } },
+        { type: "interaction.user_input", source: "user_input_api",
+            payload: { text: "こんにちは", modality: "speech", asr: { session_id: "old_session", segment_id: "segment_1" } } },
+        { type: "sensor.environment_sample", source: "bme280", payload: { temperature: 25 } },
+        { type: "action.outcome", source: "kernel_action_gate",
+            payload: { action_type: "led_change", status: "succeeded" } },
+    ];
+    for (const input of inputs) {
+        await store.append(envelopes.observe(input, { generateProposals: false }).observation, { force: true });
+    }
+    const originalText = await fs.readFile(filePath, "utf8");
     const recovered = new BehaviorArchitecture({ clock: () => nowMs });
-    for (const observation of await new EventStore({ filePath }).initialize()) {
+    const replay = await new EventStore({ filePath }).initialize();
+    assert.equal(replay.length, inputs.length);
+    for (const observation of replay) {
         recovered.observe(observation, { generateProposals: false });
     }
-    assert.equal(recovered.snapshot().state.output.tts.playing, true);
-
-    const recoveryInput = recovered.reconcileInterruptedTts();
-    assert.equal(recoveryInput.payload.reason, "kernel_restart");
-    const recoveryObservation = recovered.observe(
-        recoveryInput,
-        { generateProposals: false },
-    ).observation;
-    await store.append(recoveryObservation, { force: true });
-    assert.equal(recovered.snapshot().state.output.tts.playing, false);
-    assert.equal(recovered.snapshot().state.output.tts.last_status, "interrupted");
-
-    const replayed = new BehaviorArchitecture({ clock: () => nowMs });
-    for (const observation of await new EventStore({ filePath }).initialize()) {
-        replayed.observe(observation, { generateProposals: false });
-    }
-    assert.equal(replayed.snapshot().state.output.tts.playing, false);
-    assert.equal(replayed.snapshot().state.output.tts.last_status, "interrupted");
-    assert.equal(replayed.reconcileInterruptedTts(), null);
+    const { state, world } = recovered.snapshot();
+    assert.equal(state.interaction.last_user_input.value, "こんにちは");
+    assert.equal(world.environment.thermal_condition.value, "comfortable");
+    assert.equal(world.agency.last_action_status.value, "succeeded");
+    assert.equal(Object.hasOwn(state, "output"), false);
+    assert.equal(Object.hasOwn(state.interaction, "asr_partial"), false);
+    assert.equal(Object.hasOwn(state.interaction, "user_speaking"), false);
+    assert.equal(recovered.peekPendingProposals().length, 0);
+    assert.equal(await fs.readFile(filePath, "utf8"), originalText);
 });

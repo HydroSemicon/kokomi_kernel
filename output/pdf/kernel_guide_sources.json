@@ -1,47 +1,51 @@
 {
-  "date": "2026-10-29",
-  "branch": "feat/live-conversation-kernel",
-  "head": "ad2eb12136eb923a3e97738ddcb36330667f1a30",
-  "scope": "working tree including uncommitted and untracked implementation",
+  "date": "2026-11-08",
+  "branch": "codex/live-responses-kernel",
+  "head": "cbb47cf32ec3d778abe49c592092c738996cf4fe",
+  "scope": "current working tree including uncommitted changes",
   "sources": {
     "alice.js": {
-      "sha256": "7cec3b41fe52bbd3276c0301c284c72db827f9118b85bdd0b52706ca50ae780e",
-      "lines": 2195
+      "sha256": "3063ba0171dca760924ea463ce47d2ddb0099dffc81fe8e0640845f608272933",
+      "lines": 1305
     },
     "config.json": {
-      "sha256": "95de7468a0e7eb423d891a110539f0c6c8aefa494ff70c129d52a0e05116661f",
-      "lines": 331
+      "sha256": "ac351c450251c2dd8e7d9b773c4b1a47b9764e135b7dfadc8f4bca9bcfe5cc50",
+      "lines": 212
     },
     "package.json": {
-      "sha256": "13d13ef1c6a9703bab8b924f3733f42217a11be711b62f0d05c77020e599c1e3",
-      "lines": 27
+      "sha256": "66264d38ef2375ae746abd16e915b714f7606e78d4ac863f05ff0bd0f4fee4dc",
+      "lines": 17
     },
     "control_prompt.md": {
-      "sha256": "7d0e6a01776a9824fc8a7127a652f47693e842c1b409270b437afdb38f95c349",
-      "lines": 506
+      "sha256": "0fc55346f32138a1c925fb149a3ec5b7d3e3ee37e34fe3b2ff07f3f9ca238b6e",
+      "lines": 346
     },
     "README.md": {
-      "sha256": "8235e59a4d63c5e89e7eaed4afc11eabe6da76f8da2749e84cba04e0410391de",
-      "lines": 509
+      "sha256": "b0810c7fab290dc997a8db714fe9ffd1fdff210f6e9f14a3c52aa474c290c6d2",
+      "lines": 418
     },
     "src/behavior/action-gate.js": {
       "sha256": "585a2aebe1960fb8e71f8350840910b4117d198151ec47aa83918b1f3e34a31c",
       "lines": 200
     },
     "src/behavior/context-composer.js": {
-      "sha256": "6a8be097f8e773409f5bfcbb7fabf67fc19f7a7c28fc219b5cb4662942ac53cd",
-      "lines": 171
+      "sha256": "a32e2506feb17e447fdf15c6d3102f3be9da1b8c218389c0c475beab4d8c51b8",
+      "lines": 159
     },
     "src/behavior/drive-system.js": {
       "sha256": "89966161fa8fd7479b1216380a8440c28ea56bb3dab685e75e4f5d79f07bb7d6",
       "lines": 99
+    },
+    "src/behavior/environment-text.js": {
+      "sha256": "fafe6e4f0b53151d85419e8078bfd99bcc5b443f31cd2f9a24bfb4de47693373",
+      "lines": 9
     },
     "src/behavior/event-store.js": {
       "sha256": "0a4c25969bb6ca6cc39f23ec37e05a3932dff473f403ef080e73f793ef5a234a",
       "lines": 104
     },
     "src/behavior/index.js": {
-      "sha256": "5e9400812dd7ca3a3ed9fe5e25aaeea53d827e6db4c8fb3a65e6e11be9fc7b79",
+      "sha256": "0c16fc3aaf39a8da962d98b57de56decce8ed4bdc2b86f7ac791035e4cf6d699",
       "lines": 126
     },
     "src/behavior/observation.js": {
@@ -56,53 +60,53 @@
       "sha256": "c7be72b6b321d9179c7224e58dbb96d140c8e51ec089d193ea51d89b734138d4",
       "lines": 386
     },
-    "src/behavior/turn-registry.js": {
-      "sha256": "45f0cd1f879fd1b873a74725fa58324fba690c7d6314c7f95a59ed4c7ddb2ba2",
-      "lines": 43
-    },
     "src/behavior/world-model.js": {
       "sha256": "6d4aaae092fecdb3af1905d1a96cbc129aa82b9659cbb7561b6432dc6edad07d",
       "lines": 85
     },
-    "src/browser/chat-input.js": {
-      "sha256": "3decd202e9f8918e452a6cf7a58d81583eff6c22890464cd3539d5d9082e63af",
-      "lines": 49
-    },
-    "src/browser/output-monitor.js": {
-      "sha256": "44ea8b8256d2215c77fdd2696636031a4214ea1408ff1c359c28a723b18d559b",
-      "lines": 46
+    "src/live/api-diagnostics.js": {
+      "sha256": "65ed5d368773dc864c88e852671e2a6dcf4e048b896f299793eec908a3432fde",
+      "lines": 38
     },
     "src/live/backend-queue.js": {
-      "sha256": "ef99bd2f8e17b9791eead5642ed824759c604f8dfead436bb50a6fe0a23eade0",
+      "sha256": "01a4bc9daf771d4dd161e3236da678bf54d7f2020ed6ef14debf6c07631ffb2e",
       "lines": 24
     },
     "src/live/body-context.js": {
-      "sha256": "d5028264f150c5e3910a1cf819c49d6ce8d2f10c933c5f704974ab87b909e16c",
-      "lines": 25
-    },
-    "src/live/browser-backend.js": {
-      "sha256": "3ac38f6b440e890b8d77f42f749b3b814ce8feb723300722bc4b62c2b0d7ae9f",
-      "lines": 44
+      "sha256": "1e1c221e31cd93704b38e677428804c7661208dbf6a9959cfcf5087184187141",
+      "lines": 19
     },
     "src/live/conversation-store.js": {
-      "sha256": "3818bb1143f2afe7d221d597a16e351cb1610c5027d9e7af10f8242a00f0a88f",
-      "lines": 134
+      "sha256": "794360df59814609251959b8f101bc536ffa86c945c3c003f210e80e50694dce",
+      "lines": 135
     },
     "src/live/http-routes.js": {
-      "sha256": "12642e098071f0ce9bd3d6da4d3ad179735d36cf23715d0d9e9a3e7caffd1b78",
-      "lines": 24
+      "sha256": "e76164b78785a83d3929e1a82febfa2134d5c31ee79311638a24ea5e7cbcb1d8",
+      "lines": 33
     },
     "src/live/kernel-bridge.js": {
-      "sha256": "e53fb8a57a5f96d6bfbd78e2ec88adf333badcaa36b3ff3fe6f73ae705bf6c43",
-      "lines": 113
+      "sha256": "cd638402450c5589fd61d4691e49d898097f603636206253e225ec3aac41694f",
+      "lines": 208
     },
     "src/live/memory-extractor.js": {
-      "sha256": "01ac185f329fd86f484a02f553b436638211fb0f45ff21d0482de4f61eb05881",
-      "lines": 147
+      "sha256": "453545b0a0a25b1ac79e14c5eccd6c2155818d3fd9af197c1cde940914e744a0",
+      "lines": 188
+    },
+    "src/live/memory-wire.js": {
+      "sha256": "c449a4f45052b738d4caa798637ba41c1d9a37c9240750e50c79969e429128cf",
+      "lines": 42
+    },
+    "src/live/responses-backend.js": {
+      "sha256": "033901503e9352506b313857a4fce640e5b640972762190df651e75ec71e78f8",
+      "lines": 164
+    },
+    "src/live/responses-schema.js": {
+      "sha256": "c55e0f082d3e504e7f40a56bcc90e2786c0c2ca3811d8abe69961b67dbd36541",
+      "lines": 32
     },
     "src/live/session-service.js": {
-      "sha256": "7b231dd10cfa5e82a0462e2643d7873a895f49228de942547eb33ad2f5ae5e1f",
-      "lines": 368
+      "sha256": "881df768983b545e124e23b5bb0f7c5a4ba83c51e92625e03c17c763b2753461",
+      "lines": 383
     },
     "src/live/text-budget.js": {
       "sha256": "84e8f99eb282f76b7911bb4bad904ba16f149c1c08180c49e2fc06af6934ad3a",
@@ -117,64 +121,16 @@
       "lines": 29
     },
     "src/protocol/llm-response.js": {
-      "sha256": "7e8504d899f855a0da8a973f8bd5ab68ec3ff1c074e77106742f64cac5431d13",
-      "lines": 191
+      "sha256": "a5f7acb2afac47fc339b71a710de166c336f4c59439c6f1cf54554a109d072b7",
+      "lines": 185
     },
     "src/social/social-state-store.js": {
       "sha256": "9f512ada84e0822c70b652bfa864b6f3a917073577b251414f925fa126e55c7c",
       "lines": 200
     },
-    "src/speech/asr-capture-coordinator.js": {
-      "sha256": "95477b470aa23b434d64f2f387274955a5cff16b0a9173e0e9a3fb462152a44a",
-      "lines": 169
-    },
-    "src/speech/asr-token.js": {
-      "sha256": "3172a3a9ece0abc81747b29dae0361a7c2f6d61e7d60fe24a75d53407a9c7310",
-      "lines": 49
-    },
-    "src/speech/asr-transcript.js": {
-      "sha256": "3a41f4b66b472b8f8bf1866965e1c61e10e6d5334d74c7066ebd937a5b2f12e9",
-      "lines": 201
-    },
-    "src/speech/audio-output-lifecycle.js": {
-      "sha256": "aaa72cf264e45e3ad98cddb2af6e7a4c2985a62a6112c58bca1787ad47eeefd9",
-      "lines": 27
-    },
-    "src/speech/echo-guard.js": {
-      "sha256": "a6ae3f67d0504b833b149b3eccffc075a5b79a6d6ab285fa4d9ec070078f768a",
-      "lines": 85
-    },
-    "src/speech/elevenlabs-tts.js": {
-      "sha256": "6e2bf6bd3916ab4dfbb1d62cd406576598bf6c161ab7be98c5732f0507911ddb",
-      "lines": 209
-    },
-    "src/speech/filler-controller.js": {
-      "sha256": "c90ba95a1bd18d557fc35f689f35e5debbe5ce48d025bce729a2a1f261817465",
-      "lines": 300
-    },
-    "src/speech/filler-manifest.js": {
-      "sha256": "3b65ab6e4260ffb1da783169296d2873ecf229c18e67ae642f6a1b31d3f6f9b7",
-      "lines": 69
-    },
-    "src/speech/local-clip-player.js": {
-      "sha256": "aea8b9136250f7c4e7587e746e4ea0cef3aff2a5214e4f99fb8f1daed81f560e",
-      "lines": 57
-    },
-    "src/speech/playback-coordinator.js": {
-      "sha256": "50a9c2b12f1c1ff3852dccc4096f468a49ca41308b958095cac16a946bac5b0c",
-      "lines": 29
-    },
-    "src/speech/tts-adapter.js": {
-      "sha256": "ec4aed8cf18a5f88c375b43e17cc2dd4ec76ba3f0fc250de1a479edc80bd2c60",
-      "lines": 129
-    },
     "dashboard/app.js": {
-      "sha256": "dba12f1599f2004b58b71b3120d2a2f2ac1ec8f244069a9c33d38e55a0338b6b",
-      "lines": 646
-    },
-    "dashboard/asr-client.js": {
-      "sha256": "3ed7e30b5c6de1e7c27f874234cdb228fcb84d1c89b8baa3fe9b4448ad3b0bd3",
-      "lines": 231
+      "sha256": "184a8f131ce1ef0b4938d4898cb1985d1daa38cdab348968804181b6a2e6b97f",
+      "lines": 534
     },
     "dashboard/live-audio-monitor.js": {
       "sha256": "143720eb008910bdae695783c648964df2b19afa20bf606dc508b741eca8f96d",
@@ -188,17 +144,13 @@
       "sha256": "d0738bf9ab386ff01804a5e7152571d81dcb8641711406fdf15c532d635373b8",
       "lines": 139
     },
-    "test/asr.test.js": {
-      "sha256": "639513ad69c040658b4a138ce4fc0b7365ee9ee267f6e4a264cbe007099313cc",
-      "lines": 304
+    "test/api-diagnostics.test.js": {
+      "sha256": "f156b9cab408adbeede18f730ad23c2b82e97c12fc1839418e1320e9c54979a9",
+      "lines": 66
     },
     "test/behavior-architecture.test.js": {
-      "sha256": "0636ce4d4884dc9bd1a7aba0fc4166f8cb8484b65e8165a384e893274a0c1f87",
-      "lines": 272
-    },
-    "test/browser-backend.test.js": {
-      "sha256": "5dca9957aecd791084256b20e2750dcf4b8580f9a69b12f989b61b78f972fe70",
-      "lines": 104
+      "sha256": "b9e54a474471868271b81c36ef6d120aeaf702aa62d4e0d53253fce3b9661cc9",
+      "lines": 275
     },
     "test/event-store.test.js": {
       "sha256": "0e48d3cd67b63dbd05cfa12fa44347ed5dbc795c2f9749f119362f96baf8c5cf",
@@ -217,20 +169,20 @@
       "lines": 34
     },
     "test/live-memory.test.js": {
-      "sha256": "6f1f6eb7ded8942e738c747262edbdd0a609787e214db271d6e569d9acb1b217",
-      "lines": 292
+      "sha256": "b4dc3b502912735a439217f538670eb40d94eb4e2d2f8e2b97709b4561e57e7d",
+      "lines": 357
     },
     "test/live-runtime.test.js": {
-      "sha256": "a0dc1940d72c369b58a766ad0d255683ffb0989a3bc89477391f4a9a743cffb9",
-      "lines": 171
+      "sha256": "e1d32f489d6d1ba4dafc7dafc9ea852f6a7f574b1c00a192fae7ba0d74a87aca",
+      "lines": 222
     },
     "test/live-session.test.js": {
-      "sha256": "8075a87e04860e8bd8aa798462b3e20d099e84e4d53de388503f3f4234f4dab4",
-      "lines": 276
+      "sha256": "d153531bb8e49725b80cb72522f1ed6b08dd5d10f89422669e2496c21bac5951",
+      "lines": 414
     },
     "test/llm-response.test.js": {
-      "sha256": "ae9a5b5b7621a233b5e122e04e4aee2418de56465a682c8767217d2c1de14b47",
-      "lines": 40
+      "sha256": "2c61337d0b690bde6fb72fd09c89e46f28f37b640ccdb321a681a42a4d4c130d",
+      "lines": 53
     },
     "test/memory-cli.test.js": {
       "sha256": "40488f7ace0ea3179bb4d507cf43d7d556eebc0f43cd3fdb74734dab920f642d",
@@ -244,57 +196,29 @@
       "sha256": "e0053270226fa196f99e3ca2c87e8b549e7bf7fe7827665f005c28a803affd07",
       "lines": 50
     },
-    "test/tts.test.js": {
-      "sha256": "8c7bd4cf71f222b3c0a3ab9614d4a8857394bc08b482d93ecc6eba7699b58a07",
-      "lines": 292
-    },
-    "test/turn-registry.test.js": {
-      "sha256": "243a78ae74743c89feb5676db3c5c7ae3605bac3c654f22d624e4062b6b5d8e7",
-      "lines": 25
-    },
-    "test/voice-io-phase2.test.js": {
-      "sha256": "9051b387f3f46a0ebbb084f48ad9f71863a38209e5aad6bf1810710dc92bccfe",
-      "lines": 199
-    },
-    "prompts/live-conversation.md": {
-      "sha256": "968132cd10ee90a4c95130632a157aa5c0a09fab4c8685f4254a751ed2670829",
-      "lines": 20
-    },
     "docs/live-api-spec.md": {
-      "sha256": "bf7f399eff75c11f9ba54033defba7d457099be33190fede073e4e4a0ebb8d12",
-      "lines": 373
-    },
-    "docs/live-debug-2026-10-29.md": {
-      "sha256": "4320c37de081d502cd8696d859f98bfa0459aa6587660c290fee0857cfc20708",
-      "lines": 75
-    },
-    "docs/live-web-search-options.md": {
-      "sha256": "4a83725dc3bb09aaa8c96eb0bb06cf6338475f3754d720a6b012620e94029cb0",
-      "lines": 40
+      "sha256": "e2f1638ec0ed86644f4663fbda0d0703b825de5d54dcdf1ede72252f9310f8d9",
+      "lines": 367
     },
     "tools/memory-list.js": {
       "sha256": "0b0283e2ddde6fad47713f4c68f5e96c803ce84229435951d86e3f8a9e769ad9",
       "lines": 27
     },
     ".env.example": {
-      "sha256": "60ce4dcf9fcd7f271bd25342ed368cfd7ee20bedf720bc682c39eb99ebd8303d",
-      "lines": 7
+      "sha256": "431d4f21c8d4acbacda17289a505e3de1238c712bb734be3b867a7aa543ba055",
+      "lines": 3
     },
     ".gitignore": {
       "sha256": "9154d9dc8c3af0fc039606ff12fb2b54370f8b7194c6e36d83362d09241099c0",
       "lines": 9
     },
     "dashboard/index.html": {
-      "sha256": "891c10d78742a21f9f24dd88dc2f743ab1cba13c1b01769573bd5074a79c6f88",
-      "lines": 219
+      "sha256": "4569deef8d4eaadd865eb5f46f35f2fa420099635b886690958c79ad9ab8b2e0",
+      "lines": 213
     },
     "dashboard/styles.css": {
-      "sha256": "a9d506a7541b7bde6c08b6fca2f35cb2c12ff697f30eaaae1491b1faa7cdf064",
-      "lines": 300
-    },
-    "realtime_stt.html": {
-      "sha256": "acfb1ac2883eb17d740c9ec8c13139d7c748e478806a1c75cc79ddf575409537",
-      "lines": 85
+      "sha256": "4eabc3ad33d6cc1ba8a18e4a6af82b521e850ba131410d2cdcb5b4b598fe738e",
+      "lines": 290
     }
   }
 }

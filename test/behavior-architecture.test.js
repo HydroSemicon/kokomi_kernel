@@ -19,7 +19,7 @@ function testArchitecture() {
                 dark_brightness: 40,
                 bright_brightness: 75,
             },
-            persona: { id: "kokomi-origin", version: "test-version" },
+            persona: { id: "unused-legacy-persona", version: "test-version" },
         },
     });
     return {
@@ -147,7 +147,7 @@ test("behavior proposals are leased until delivery succeeds and can be restored 
     assert.equal(architecture.peekPendingProposals().length, 0);
 });
 
-test("cognitive context keeps trigger, persona, state, world, memory, and proposals separate", () => {
+test("cognitive context separates state and memory and ignores legacy persona configuration", () => {
     const { architecture } = testArchitecture();
     architecture.observe({
         id: "sensor_detail_that_must_stay_inside_kernel",
@@ -179,7 +179,7 @@ test("cognitive context keeps trigger, persona, state, world, memory, and propos
     assert.equal(context.protocol_version, "1.2");
     assert.equal(context.turn_id, context.trigger.id);
     assert.equal(context.trigger.payload.text, "今日は寒いね");
-    assert.equal(context.persona.version, "test-version");
+    assert.equal(Object.hasOwn(context, "persona"), false);
     assert.equal(context.memory[0].id, "memory_1");
     assert.equal(context.memory.length, 1);
     assert.equal(context.state.environment, undefined);
@@ -191,6 +191,7 @@ test("cognitive context keeps trigger, persona, state, world, memory, and propos
     assert.equal("behavior_proposals" in context, false);
 
     const json = JSON.stringify(context);
+    assert.equal(json.includes("unused-legacy-persona"), false);
     assert.equal(json.includes("sensor_detail_that_must_stay_inside_kernel"), false);
     assert.equal(json.includes("observation_id"), false);
     assert.equal(json.includes("based_on"), false);

@@ -205,7 +205,6 @@ The Kernel sends one compact object per cognitive turn:
   "protocol_version": "1.2",
   "turn_id": "obs_<uuid>",
   "trigger": {},
-  "persona": {},
   "state": {},
   "world": {},
   "memory": [],
@@ -218,7 +217,7 @@ The Kernel sends one compact object per cognitive turn:
 
 Optional blocks are omitted when empty. High-volume provenance remains in Kernel storage; the LLM receives a compact projection sufficient for the current decision.
 
-The configured persona is `kokomi-origin`. Persona content is delivered at session bootstrap, while its ID and compact version are carried in later contexts.
+Persona files and legacy persona settings are not used. Cognitive contexts carry no persona ID or version.
 
 ### Turn correlation
 
@@ -303,7 +302,10 @@ An unfinished intention recovered after restart becomes an explicit unknown/inte
 
 The default `config.live.enabled: true` separates conversation from embodied control.
 Start the Kernel with `npm start`, open `http://localhost:3000/`, and use **会話開始** / **会話終了**.
-Set `OPENAI_API_KEY` on the server and provide the persona at `config.live.personaPath`.
+Set `OPENAI_API_KEY` on the server. No persona file is required or loaded.
+The full `control_prompt.md` is sent at Live session creation so Live knows the system's capabilities
+and constraints before speaking. The shared prompt separates Live's conversation/delegation role
+from Responses' JSON control role. Restart the Kernel and start a new conversation after editing it.
 For restricted API keys, enable Live Write and Responses Write; Live reports `missing_scope`
 and Responses inference also requires `api.responses.write`. The Kernel calls `gpt-6-luna` through Responses by default. Voice continues while control, vision, search, or memory work is pending. Use `npm ci` to install the locked dependencies.
 

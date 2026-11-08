@@ -1,25 +1,30 @@
 {
-  "pages": 65,
-  "outlines": 60,
+  "date": "2026-11-08",
+  "branch": "codex/live-responses-kernel",
+  "head": "cbb47cf32ec3d778abe49c592092c738996cf4fe",
+  "scope": "Current working tree including uncommitted changes",
+  "pages": 75,
+  "sections": 70,
+  "outlines": 70,
   "out_of_page_chars": [],
   "replacement_chars": 0,
-  "toc_links": 60,
-  "date": "2026-10-29",
-  "branch": "feat/live-conversation-kernel",
-  "head": "ad2eb12136eb923a3e97738ddcb36330667f1a30",
-  "source_files": 73,
+  "all_pages_have_text": true,
+  "toc_links": 70,
+  "source_files": 54,
   "source_hashes_match": true,
+  "branch_and_head_match": true,
   "outline_destinations_match": true,
-  "json_examples_valid": 7,
+  "one_topic_per_page": true,
+  "json_examples_valid": 8,
   "tests": {
     "runtime": "Node.js 24.22.1",
     "command": "node --test",
-    "total": 104,
-    "pass": 104,
+    "total": 84,
+    "pass": 84,
     "fail": 0,
     "skipped": 0,
-    "scope": "Existing mock and isolated-runtime tests; no paid Live or physical hardware testing"
+    "scope": "Existing mocked API/device and isolated-runtime tests; no paid API or physical hardware testing"
   },
-  "pdf_sha256": "938918c6dec8207a9f9669160056858476461056823c4bdeafcf44932417bd19",
-  "visual_review": "All 65 pages rendered and reviewed. Final revised reference tables re-rendered and inspected. No clipping or overlap observed."
+  "pdf_sha256": "aabc3f44c5f92516ed91a63a91f41547ba1ed22738c35372ad3047cb424cf871",
+  "visual_review": "All 75 pages rendered and inspected via contact sheets. Connection and delegation diagrams, configuration table, memory JSON examples, and revised observation example inspected at larger size."
 }

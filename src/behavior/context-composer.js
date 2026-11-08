@@ -1,8 +1,7 @@
 import { hasEnvironmentReading } from "./environment-text.js";
 
 export class ContextComposer {
-    constructor({ persona = {}, protocolVersion = "1.2" } = {}) {
-        this.persona = persona;
+    constructor({ protocolVersion = "1.2" } = {}) {
         this.protocolVersion = protocolVersion;
     }
 
@@ -12,10 +11,6 @@ export class ContextComposer {
             protocol_version: this.protocolVersion,
             turn_id: trigger.id,
             trigger: compactTrigger(trigger),
-            persona: {
-                id: this.persona.id ?? "kokomi-origin",
-                version: compactVersion(this.persona.version ?? "unspecified"),
-            },
             state: projectState(state),
             world: projectWorld(world),
         };
@@ -68,10 +63,6 @@ function round(value, decimals = 1) {
     if (typeof value !== "number" || !Number.isFinite(value)) return value;
     const scale = 10 ** decimals;
     return Math.round(value * scale) / scale;
-}
-
-function compactVersion(version) {
-    return version.length > 12 ? version.slice(0, 12) : version;
 }
 
 function compactPayload(value) {

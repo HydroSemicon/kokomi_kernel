@@ -6,8 +6,9 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createServer } from "node:http";
 import { spawn } from "node:child_process";
+import { WebSocketServer } from "ws";
 
-async function startKernel(t, { key = "", route = null } = {}) {
+async function startKernel(t, { key = "", route = null, configure = () => {}, onLiveEvent = () => {} } = {}) {
     const folder = await fs.mkdtemp(path.join(os.tmpdir(), "kokomi-live-runtime-"));
     const device = createServer(async (req, res) => {
         res.setHeader("Content-Type", "application/json");
@@ -15,6 +16,17 @@ async function startKernel(t, { key = "", route = null } = {}) {
         if (req.url === "/environment") res.end(JSON.stringify({ temperature: 25, humidity: 50, pressure: 1013 }));
         else if (req.url === "/brightness") res.end(JSON.stringify({ brightness: 50 }));
         else { res.statusCode = 404; res.end("{}"); }
+    });
+    const liveSockets = new WebSocketServer({ server: device });
+    liveSockets.on("connection", (socket) => {
+        socket.send(JSON.stringify({ type: "session.started", event_id: "started" }));
+        socket.on("message", (bytes) => {
+            const event = JSON.parse(bytes.toString());
+            onLiveEvent(event);
+            socket.send(JSON.stringify(event.type === "session.close"
+                ? { type: "session.closed", event_id: `closed_${event.event_id}`, usage: { duration_seconds: 0 } }
+                : { type: "session.updated", client_event_id: event.event_id }));
+        });
     });
     device.listen(0, "127.0.0.1");
     await new Promise((resolve) => device.once("listening", resolve));
@@ -29,12 +41,16 @@ async function startKernel(t, { key = "", route = null } = {}) {
     config.sensors.bme280Url = `${deviceUrl}/environment`;
     config.sensors.brightnessUrl = `${deviceUrl}/brightness`;
     config.responses.url = `${deviceUrl}/responses`;
+    config.live.apiBaseUrl = deviceUrl;
+    config.live.socketBaseUrl = deviceUrl.replace("http:", "ws:");
     config.vision.snapshotUrl = `${deviceUrl}/snapshot`;
     config.actions.ledChange.endpointUrl = `${deviceUrl}/led`;
+    configure(config, folder);
     const configPath = path.join(folder, "config.json");
     await fs.writeFile(configPath, JSON.stringify(config));
     const root = fileURLToPath(new URL("../", import.meta.url));
-    const environment = { ...process.env, KOKOMI_CONFIG_PATH: configPath, OPENAI_API_KEY: key };
+    const environment = { ...process.env, KOKOMI_CONFIG_PATH: configPath, OPENAI_API_KEY: key,
+        KOKOMI_PERSONA_PATH: path.join(folder, "unused-env-persona.md") };
     delete environment.NODE_TEST_CONTEXT;
     const child = spawn(process.execPath, ["alice.js"], { cwd: root, windowsHide: true,
         env: environment,
@@ -45,6 +61,8 @@ async function startKernel(t, { key = "", route = null } = {}) {
             child.kill();
             await ended;
         }
+        for (const socket of liveSockets.clients) socket.terminate();
+        liveSockets.close();
         device.closeAllConnections();
         device.close();
         await fs.rm(folder, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
@@ -80,6 +98,51 @@ test("isolated Kernel starts without an API key, serves Live controls, and repor
         headers: { "Content-Type": "application/json", Origin: "http://localhost:3000" }, body: JSON.stringify({ sdp: "v=0 offer" }) });
     assert.equal(create.status, 503);
     assert.match((await create.json()).error, /OPENAI_API_KEY/u);
+});
+
+test("Live startup sends the entire shared control prompt without using any persona file", async (t) => {
+    const controlPrompt = await fs.readFile(new URL("../control_prompt.md", import.meta.url), "utf8");
+    for (const webSearchEnabled of [true, false]) await t.test(`web search ${webSearchEnabled}`, async (t) => {
+        const created = [];
+        const liveEvents = [];
+        const base = await startKernel(t, { key: "test-key", onLiveEvent: (event) => liveEvents.push(event),
+            configure: (config, folder) => {
+                config.responses.webSearchEnabled = webSearchEnabled;
+                // Legacy settings and environment variables must never load these absent files.
+                config.live.personaPath = path.join(folder, "unused-config-persona.md");
+                config.live.instructionsPath = path.join(folder, "unused-old-live-prompt.md");
+                config.behavior.persona = { id: "unused-legacy-persona", version: "unused-version" };
+                config.live.stateSyncIntervalMs = 25;
+            }, route: async (req, res) => {
+                if (req.url !== "/sessions") return false;
+                const chunks = [];
+                for await (const chunk of req) chunks.push(chunk);
+                created.push(JSON.parse(Buffer.concat(chunks)));
+                res.end(JSON.stringify({ session: { id: "live_prompt_test" }, transport: { sdp: "v=0 answer" } }));
+                return true;
+            } });
+        const post = (endpoint, body) => fetch(`${base}/api/live/${endpoint}`, { method: "POST",
+            headers: { "Content-Type": "application/json", Origin: "http://localhost:3000" }, body: JSON.stringify(body) });
+        const response = await post("session", { sdp: "v=0 offer" });
+        assert.equal(response.status, 201);
+        const owner = await response.json();
+        const { instructions } = created[0].session;
+        assert.ok(instructions.startsWith("Execution role: Live voice frontend."));
+        assert.ok(instructions.includes(controlPrompt)); // No capability or restriction may be silently dropped.
+        assert.ok(Buffer.byteLength(instructions, "utf8") <= 16384);
+        assert.equal(instructions.includes("このセッションでは公開 Web 検索は利用できません。"), !webSearchEnabled);
+        assert.ok(!JSON.stringify(created).includes("unused-legacy-persona"));
+        assert.ok(!instructions.includes("人格設定:"));
+        const deadline = Date.now() + 3000;
+        while (!liveEvents.some((event) => event.type === "session.thinking.append") && Date.now() < deadline) {
+            await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+        assert.ok(liveEvents.some((event) => event.type === "session.thinking.append"));
+        assert.ok(!JSON.stringify(liveEvents).includes("unused-legacy-persona"));
+        assert.equal(liveEvents.filter((event) => event.type === "session.instructions.append").length, 0);
+        assert.equal((await post("stop", { token: owner.control_token })).status, 200);
+        assert.equal(created.length, 1); // The control prompt is sent only during session creation.
+    });
 });
 
 test("typed control uses Responses, attaches a snapshot, rejects mismatched turns and publishes search citations", async (t) => {
@@ -135,6 +198,8 @@ test("typed control uses Responses, attaches a snapshot, rejects mismatched turn
     assert.equal(sent[0].authorization, "Bearer test-key");
     assert.equal(sent[0].body.store, false);
     assert.match(sent[0].body.instructions, /physical embodied AI/);
+    assert.ok(sent[0].body.instructions.startsWith("Execution role: Responses backend."));
+    assert.ok(sent.every(({ body }) => !Object.hasOwn(JSON.parse(body.input[0].content[0].text), "persona")));
     assert.equal(sent[0].body.text.format.strict, true);
     assert.equal(sent[1].body.input[0].content[1].image_url, `data:image/jpeg;base64,${jpeg.toString("base64")}`);
     assert.equal((await send("LEDを変更して")).status, 503);

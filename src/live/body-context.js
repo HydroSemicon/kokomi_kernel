@@ -13,7 +13,7 @@ export function bodyContext(snapshot, { intoxicationSignal, quantization }) {
         : level < quantization.moderateIntoxication ? "light" : "moderate";
     const style = { unknown: "身体側の酔い状態は不明。普段どおりに話し、酔っていると推測しない。",
         sober: "現在は素面。普段の話し方に戻す。以前の酔った話し方の指示を解除する。",
-        light: "現在は軽い酔い状態。普段の人格を保ち、少しゆっくり、語尾を柔らかく話す。",
-        moderate: "現在は酔い状態が強まっている。普段の人格を保ち、少し甘える調子で、時々短く言い直す。聞き取れる明瞭さは保つ。" }[band];
+        light: "現在は軽い酔い状態。少しゆっくり、語尾を柔らかく話す。",
+        moderate: "現在は酔い状態が強まっている。少し甘える調子で、時々短く言い直す。聞き取れる明瞭さは保つ。" }[band];
     return { facts, style };
 }

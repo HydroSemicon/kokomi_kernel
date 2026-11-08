@@ -37,22 +37,23 @@ flowchart TD
    Restricted キーでは Live と Responses の Write を有効にする。実セッションで
    `missing_scope` / `api.responses.write` が報告され、Responses Write がないと Live 内部の履歴圧縮が無効になることを確認した。
    Responses Write は機体制御・画像・記憶・検索の API 呼び出しにも必要。
-3. `config.live.personaPath` の人格設定ファイルを用意する。既定は隣接リポジトリ
-   `../kokomi-persona/kokomi_origin.md`。`KOKOMI_PERSONA_PATH` で上書き可能。
+3. `control_prompt.md` で能力と制約を確認する。人格設定ファイルは使用しない。
 4. `npm ci` で依存関係をインストールする。
 5. `npm start` または `node alice.js` を実行する。
 6. `http://localhost:3000/` の「会話開始」を押し、マイク・音声再生を許可する。
 
 キーはブラウザに返さない。API キーがない場合もカーネルと画面は起動できるが、Live 開始は 503 になる。
-人格ファイルを読めない場合は、有料セッションを作る前に開始を失敗させる。
-会話指示は `prompts/live-conversation.md` を各セッションの作成時に読み、人格設定を後ろに追加する。
-現在の会話指示は[公式の推奨テンプレート](https://developers.openai.com/api/docs/guides/live-prompting)を参考にした
-ニュートラルな比較用設定。相づちは適度にし、速度・声の高さ・感情表現の追加演出は指定しない。
-相づち・割り込み・委譲の見出しと、カメラ・操作・記憶への委譲に必要な条件を残す。
-変更前の指示は `prompts/live-conversation.pre-neutral-2026-10-28.md` に元の内容のまま保存した。
-比較時も人格ファイル、`live.voice`、身体状態に応じた追加指示は従来どおり。
-会話指示ファイルだけの編集は、現在の会話を終了して次に開始すると反映される。
-Responses の機体制御・画像解析には、起動時に読み込んだ `control_prompt.md` を `instructions` として送る。記憶処理と検索には専用の指示を使う。
+カーネル起動時に `control_prompt.md` を一度読み、Live と Responses が同じ内容を使う。
+Live の各セッションの作成時に、全文を `session.instructions` として送る。会話中に同じ制御プロンプトを再送しない。
+同じ文書内で役割を分け、Live には `Execution role: Live voice frontend`、Responses には `Execution role: Responses backend` を指定する。
+Live は能力と制約を理解して自然な日本語で会話し、実処理が必要なら `<|SpawnThinking|>` で委譲する。
+JSON 出力・`turn_id` の規則は Responses にだけ適用する。カメラ、LED、涙機構、公開投稿、人物登録、状態照会、記憶、検索の説明と制約は省略しない。
+人格設定は開始時・会話中ともに読み込まず、送らない。旧 `live.personaPath`、`KOKOMI_PERSONA_PATH`、`behavior.persona` は使わず、制御入力に人格 ID や版を付けない。
+ニュートラルな会話・相づち・割り込み・委譲の指示は、[公式の推奨テンプレート](https://developers.openai.com/api/docs/guides/live-prompting)を参考にして `control_prompt.md` に含める。
+以前の `prompts/live-conversation.md` と `prompts/live-conversation.pre-neutral-2026-10-28.md` は比較用に残すが、実行時には読み込まない。
+音声の選択と身体状態に応じた追加指示は引き続き使用する。過去の会話資料にある人格指示は採用しない。
+制御プロンプトの編集を反映するにはカーネルを再起動し、新しい会話を開始する。
+Responses の機体制御・画像解析にも全文を `instructions` として送る。記憶処理と検索には専用の指示を使う。
 
 `KOKOMI_CONFIG_PATH` で別の設定ファイルを指定できる。隔離起動テストでは一時ファイルを使い、
 実運用の観測・記憶ファイルを変更せず、センサー通信もローカルの偽デバイスへ向ける。
@@ -131,7 +132,8 @@ Responses の機体制御・画像解析には、起動時に読み込んだ `co
 
 長期記憶を全件 Live に転送しない。
 
-- 開始時: 前回の要約、現在の身体状態、関連する採用済み記憶、直近の会話を予算内で渡す。
+- 開始時: 前回の要約、現在の身体状態、関連する採用済み記憶、直近の会話を予算内で渡す。過去の会話は記録時刻と話者を付けた参考資料としてまとめる。
+- 新しい会話の開始時刻と、短い挨拶後に新しい発話を待つ指示を `developer` メッセージで渡す。過去の依頼や検索を実行中として再開しない。
 - 検索の手掛かりがない開始時は、最近の採用済み長期記憶を設定件数まで選ぶ。
 - 会話中: 最近のユーザー発言で既存 `MemoryStore.retrieve()` を検索し、未送信の記憶を追加。
 - 既に開始時/会話中に共有した記憶 ID は、そのセッションで再送しない。
@@ -142,7 +144,8 @@ Responses の機体制御・画像解析には、起動時に読み込んだ `co
 本実装は tokenizer 依存を増やさず、UTF-8 のバイト数をトークン数の保守的な上界として予算を検査する。
 既定は開始時 6,000、追加１回 450。日本語では実際のトークン上限よりかなり短くなる。
 コードポイント単位で分割し、サロゲートや UTF-8 文字を壊さない。
-人格と会話指示にも 16,384 バイトの保守的上限を設ける。
+制御プロンプト全文・役割指定・身体状態による初期指示の合計にも 16,384 バイトの保守的上限を設ける。
+超過時は省略せず、有料セッションを作る前に失敗させる。API 自体の instructions 上限 16,384 トークンとは単位が異なる。
 
 ## 6. 制御用 LLM
 

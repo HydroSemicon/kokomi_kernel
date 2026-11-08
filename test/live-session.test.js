@@ -23,7 +23,7 @@ function fixture(overrides = {}) {
         })).slice(-limit), append: async (entry) => { logged.push(entry); return entry; } };
     const service = new LiveSessionService({ config: { ...config.live, closeTimeoutMs: 20, requestTimeoutMs: 100 },
         apiKey: "test-secret", conversations, clock: () => now,
-        memory: { retrieve: () => [], list: () => [] }, bootstrap: async () => "心海として会話する",
+        memory: { retrieve: () => [], list: () => [] }, bootstrap: async () => "制御用プロンプト",
         getContext: () => ({ facts: "室温は25℃", style: "普段どおり話す" }),
         fetchImpl: async (url, options) => { requests.push({ url, options }); return { ok: true,
             json: async () => ({ session: { id: "live_test" }, transport: { sdp: "v=0 answer" } }) }; },
@@ -87,6 +87,31 @@ test("Live receives qualitative world state and does not replay prior numerical 
     await f.service.stop(owner.control_token);
 });
 
+test("a later session receives past speech as dated reference data and starts a new conversation", async () => {
+    const f = fixture();
+    const oldTime = Date.parse("2026-11-05T20:40:00Z");
+    const newTime = Date.parse("2026-11-07T14:12:00Z");
+    f.setNow(newTime);
+    f.service.conversations.recent = () => [
+        { role: "user", text: "メンバーも調べて", received_at: oldTime },
+        { role: "assistant", text: "今もう少し確認してるんだけど、メンバーは…", received_at: oldTime + 1000 },
+    ];
+    const owner = await f.service.start("v=0 offer");
+    const { input } = JSON.parse(f.requests[0].options.body).session;
+    assert.deepEqual(input.map((item) => item.role), ["user", "developer"]);
+    const reference = input[0].content[0].text;
+    assert.match(reference, /メンバーも調べて/u);
+    assert.match(reference, /2026-11-05T20:40:00.000Z/u);
+    assert.match(reference, /"speaker":"assistant"/u);
+    assert.match(input[1].content[0].text, /2026-11-07T14:12:00.000Z/u);
+    assert.match(input[1].content[0].text, /新しい音声会話|ユーザーの新しい発話を待つ/u);
+    assert.match(input[1].content[0].text, /現在進行中の作業として引き継ぎません/u);
+    assert.ok(input.every((item) => item.content[0].type === "input_text"));
+    const startupBytes = input.reduce((total, item) => total + Buffer.byteLength(item.content[0].text), 0);
+    assert.ok(startupBytes <= config.live.initialContextBudgetTokens);
+    await f.service.stop(owner.control_token);
+});
+
 test("sideband open does not send context until media startup is confirmed", async () => {
     const f = fixture({ autoStart: false });
     const owner = await f.service.start("v=0 offer");
@@ -135,6 +160,12 @@ test("missing API keys fail before a billable request and invalid configuration 
     await assert.rejects(f.service.start("v=0 offer"), /OPENAI_API_KEY/u);
     assert.equal(requests, 0);
     assert.throws(() => fixture({ config: { ...config.live, updateBudgetTokens: 501 } }), /budget/u);
+});
+
+test("an oversized control prompt fails before a billable request instead of truncating capabilities", async () => {
+    const f = fixture({ bootstrap: async () => "x".repeat(16384) });
+    await assert.rejects(f.service.start("v=0 offer"), /startup instructions exceed/u);
+    assert.equal(f.requests.length, 0);
 });
 
 test("transcripts are saved once and metadata-only delegation does not invent request text", async () => {

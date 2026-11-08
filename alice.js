@@ -107,10 +107,11 @@ let liveBridge;
 let memoryExtractor;
 let lastMemoryTickAt = Date.now();
 let lastLiveDiagnostic;
+const controlInstructions = fs.readFileSync(new URL("./control_prompt.md", import.meta.url), "utf8");
 const responsesBackend = new ResponsesBackend({
     config,
     apiKey: process.env.OPENAI_API_KEY,
-    instructions: fs.readFileSync(new URL("./control_prompt.md", import.meta.url), "utf8"),
+    instructions: `Execution role: Responses backend.\n\n${controlInstructions}`,
     audit: (payload, options) => responseProtocol.audit(payload, options),
     onDiagnostic: logApi,
     onRequest: ({ error, durationMs }) => updateService("responses", {
@@ -366,14 +367,8 @@ liveService = new LiveSessionService({
     conversations: conversationStore,
     memory: memoryStore,
     bootstrap: async () => {
-        const [instructions, persona] = await Promise.all([
-            fs.promises.readFile(path.resolve(repositoryDirectory, config.live.instructionsPath), "utf8"),
-            fs.promises.readFile(path.resolve(repositoryDirectory, process.env.KOKOMI_PERSONA_PATH || config.live.personaPath), "utf8"),
-        ]);
         const searchNotice = config.responses.webSearchEnabled ? "" : "\nこのセッションでは公開 Web 検索は利用できません。";
-        const prompt = `${instructions}\n${persona}${searchNotice}`;
-        if (Buffer.byteLength(prompt, "utf8") > 16384) throw new LiveError(503, "Live persona/instructions exceed the conservative startup budget");
-        return prompt;
+        return `Execution role: Live voice frontend.\n\n${controlInstructions}${searchNotice}`;
     },
     getContext: liveBodyContext,
     onDelegation: async (task) => {

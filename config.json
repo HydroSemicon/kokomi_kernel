@@ -68,11 +68,6 @@
         "drives": {
             "social_need_full_after_ms": 14400000,
             "external_signal_stale_ms": 300000
-        },
-        "persona": {
-            "id": "kokomi-origin",
-            "version": "604b425e381c5a3c6a523c4715078fbb8ba72bec",
-            "delivery": "session_bootstrap"
         }
     },
 
@@ -107,8 +102,6 @@
         "voice": "harema",
         "apiBaseUrl": "https://api.openai.com/v1/live",
         "socketBaseUrl": "wss://api.openai.com/v1/live",
-        "instructionsPath": "./prompts/live-conversation.md",
-        "personaPath": "../kokomi-persona/kokomi_origin.md",
         "conversationPath": "./data/runtime/live-conversations.jsonl",
         "checkpointPath": "./data/runtime/live-memory-checkpoint.json",
         "allowedOrigins": ["http://localhost:3000", "http://127.0.0.1:3000", "http://[::1]:3000"],

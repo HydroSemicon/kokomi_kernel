@@ -124,6 +124,21 @@ export class LiveKernelBridge {
         }, { priority: 100, valid: () => !task || this.live.isCurrent(task) });
     }
 
+    submitCoughContext(context, { valid = () => true } = {}) {
+        const sessionId = this.live.session?.id;
+        const current = () => valid() && this.live.session?.id === sessionId;
+        return this.queue.submit(async () => {
+            if (!current()) return null;
+            const payload = await this.runBackend({ ...context, task: "live_control",
+                response_contract: "A recent microphone event detected a cough nearby. Return a brief, gentle Japanese check-in in result, such as 大丈夫？ 少し休む？. The speaker is unidentified; do not claim a named person coughed or diagnose illness. Do not repeatedly warn or give unsolicited medical advice. Return empty actions and requests. Copy turn_id unchanged." },
+            { valid: current });
+            if (!current()) return null;
+            if (payload.actions?.length || payload.requests?.length) throw new Error("Cough reactions must be read-only");
+            if (payload.result) await this.reportResult(payload.result, null);
+            return payload.result;
+        }, { priority: 50 });
+    }
+
     async reportResult(result, task) {
         const sessionId = task?.sessionId ?? this.live.session?.id ?? "kernel";
         await this.conversations.append({ sessionId, role: "kernel", text: result });

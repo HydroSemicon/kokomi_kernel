@@ -321,6 +321,16 @@ Rules:
 - "body_part" is "head", "hand", or "shoulder".
 - `trigger.observed_at` originates from the touch sensor event.
 
+## Cough
+
+`audio.cough_detected` is a finalized BEATs microphone observation of a nearby
+cough. The person who coughed is unidentified; camera presence alone does not
+identify them. When the Kernel supplies a fresh cough reaction, gently check on
+the user in Japanese (for example, 「大丈夫？ 少し休む？」). Keep it brief and
+respect the ongoing conversation. Do not diagnose illness, persist a health fact,
+or trigger physical/external actions. Reactions are rate-limited by the Kernel;
+do not turn a stored `last_cough` fact into another unsolicited check-in.
+
 ---
 
 # Behavior rules

@@ -41,6 +41,7 @@
             "environment_ms": 15000,
             "brightness_ms": 15000,
             "sound_ms": 5000,
+            "cough_ms": 30000,
             "person_ms": 300000,
             "touch_ms": 30000
         },
@@ -168,6 +169,22 @@
         "allowedLevels": ["quiet", "low", "medium", "high", "loud"]
     },
 
+    "coughDetection": {
+        "enabled": false,
+        "managedProcess": true,
+        "detector": {
+            "directory": "../embodied-YAMNet",
+            "python": null,
+            "inferenceDevice": "cuda",
+            "device": null,
+            "head": "artifacts/beats-cough-public/head_calibrated.npz",
+            "config": "artifacts/beats-cough-public/config_calibrated.json"
+        },
+        "storagePath": "./data/runtime/cough-settings.json",
+        "reactionCooldownMs": 60000,
+        "maxEventAgeMs": 30000
+    },
+
     "touch": {
         "source": "touch",
         "startedType": "touch_started",
@@ -199,6 +216,9 @@
         "touchSensorInput": "/touch_sensor_input",
         "userInput": "/user_input",
         "audioClassification": "/audio_classification",
+        "beatsCough": "/api/perception/beats/cough",
+        "coughDetection": "/api/perception/beats/cough-detection",
+        "beatsHeartbeat": "/api/perception/beats/heartbeat",
         "internalState": "/internal_state",
         "behaviorState": "/api/behavior/state",
         "behaviorTick": "/api/behavior/tick",

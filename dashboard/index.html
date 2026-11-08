@@ -73,6 +73,20 @@
                     </div>
                     <div id="sensor-grid" class="sensor-grid" aria-live="polite"></div>
 
+                    <article class="panel cough-panel" aria-labelledby="cough-heading">
+                        <div>
+                            <p class="eyebrow">BEATs</p>
+                            <h2 id="cough-heading">咳検出</h2>
+                            <p id="cough-status" class="section-note" aria-live="polite">状態を取得しています</p>
+                            <p id="cough-last-detected" class="section-note">検出記録はありません</p>
+                        </div>
+                        <label class="cough-switch" for="cough-enabled">
+                            <input id="cough-enabled" type="checkbox" role="switch" aria-describedby="cough-status" disabled>
+                            <span class="cough-switch-track" aria-hidden="true"></span>
+                            <span id="cough-switch-label">OFF</span>
+                        </label>
+                    </article>
+
                     <div class="overview-grid">
                         <article class="panel services-panel">
                             <div class="panel-head"><div><p class="eyebrow">CONNECTIONS</p><h2>接続サービス</h2></div><span id="service-count" class="counter">--</span></div>

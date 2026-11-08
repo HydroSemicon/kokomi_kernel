@@ -333,6 +333,7 @@ See [the Live implementation specification](docs/live-api-spec.md) for configura
 | Camera snapshot | Active on-demand request | Image attached to the same LLM vision turn |
 | Touch | Active event input | Bound body part and petting lifecycle |
 | Audio classification | Active event input | Sound label, level, confidence, quietness, and speech activity |
+| BEATs cough detection | Kernel-managed Python process and dedicated HTTP input | Console ON/OFF, finalized cough observation, and rate-limited caring response through Responses / Live |
 | LED | Active action output | Audited `#RRGGBB` command and returned outcome |
 | Tear actuator | Active action output | Audited speed/duration command and returned outcome |
 | Bluesky | Active guarded action | Explicitly authorized public post |
@@ -353,6 +354,9 @@ See [the Live implementation specification](docs/live-api-spec.md) for configura
 | POST | `/yolo_event` | Resolved person event |
 | POST | `/touch_sensor_input` | Touch lifecycle event |
 | POST | `/audio_classification` | Sound classification event |
+| POST | `/api/perception/beats/cough` | Finalized BEATs cough event |
+| GET / POST | `/api/perception/beats/cough-detection` | Cough detection status and persistent ON/OFF control |
+| POST | `/api/perception/beats/heartbeat` | BEATs bridge process status |
 | POST | `/internal_state` | Normalized homeostatic signals |
 | GET | `/api/behavior/state` | State, world, drives, social state, action state, and proposals |
 | POST | `/api/behavior/tick` | Explicit behavior evaluation tick |
@@ -363,6 +367,14 @@ See [the Live implementation specification](docs/live-api-spec.md) for configura
 | POST | `/user_input` | Typed user input and normal cognitive-turn creation |
 
 The runtime server listens on port 3000.
+
+For cough detection, run `npm start` and enable **咳検出** in the dashboard.
+The Kernel automatically starts the cough-only model from `../embodied-YAMNet`
+and stops it when switched OFF or when the Kernel shuts down. Start a Live
+conversation for spoken check-ins. Configure the microphone and CPU/CUDA in
+`config.json` under `coughDetection.detector`.
+See [BEATs setup and API details](docs/beats-cough-integration.md) for microphone,
+CPU, process lifecycle, and endpoint configuration.
 
 ## Persistence and recovery
 

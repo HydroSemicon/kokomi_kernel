@@ -36,6 +36,7 @@ export class StateStore {
             environment_ms: freshness.environment_ms ?? 15_000,
             brightness_ms: freshness.brightness_ms ?? 15_000,
             sound_ms: freshness.sound_ms ?? 5_000,
+            cough_ms: freshness.cough_ms ?? 30_000,
             person_ms: freshness.person_ms ?? 10_000,
             touch_ms: freshness.touch_ms ?? 30_000,
         };
@@ -43,6 +44,7 @@ export class StateStore {
         this.lastObservation = null;
         this.environment = {};
         this.sound = null;
+        this.lastCough = null;
         this.personTracks = new Map();
         this.hasPersonEvidence = false;
         this.lastPersonSeenAt = null;
@@ -70,6 +72,13 @@ export class StateStore {
             break;
         case "audio.classification":
             this.#applySound(observation);
+            break;
+        case "audio.cough_detected":
+            this.lastCough = makeFact({
+                value: { label: "cough", subject: observation.payload.subject },
+                observation,
+                staleAfterMs: this.freshness.cough_ms,
+            });
             break;
         case "vision.person_recognized":
         case "vision.person_unknown":
@@ -317,6 +326,7 @@ export class StateStore {
                 person_present: personPresence,
                 visible_people: visiblePeople,
                 last_sound: publicFact(this.sound, nowMs),
+                last_cough: publicFact(this.lastCough, nowMs),
             },
             interaction: {
                 being_petted: pettingState,

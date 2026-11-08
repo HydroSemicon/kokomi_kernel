@@ -36,6 +36,8 @@ async function startKernel(t, { key = "", route = null, configure = () => {}, on
     config.memory.storagePath = path.join(folder, "memory.json");
     config.social.storagePath = path.join(folder, "social.json");
     config.persistence.eventLogPath = path.join(folder, "observations.jsonl");
+    config.coughDetection.storagePath = path.join(folder, "cough-settings.json");
+    config.coughDetection.managedProcess = false;
     config.live.conversationPath = path.join(folder, "conversation.jsonl");
     config.live.checkpointPath = path.join(folder, "checkpoint.json");
     config.sensors.bme280Url = `${deviceUrl}/environment`;
@@ -45,7 +47,7 @@ async function startKernel(t, { key = "", route = null, configure = () => {}, on
     config.live.socketBaseUrl = deviceUrl.replace("http:", "ws:");
     config.vision.snapshotUrl = `${deviceUrl}/snapshot`;
     config.actions.ledChange.endpointUrl = `${deviceUrl}/led`;
-    configure(config, folder);
+    await configure(config, folder);
     const configPath = path.join(folder, "config.json");
     await fs.writeFile(configPath, JSON.stringify(config));
     const root = fileURLToPath(new URL("../", import.meta.url));
@@ -219,4 +221,97 @@ test("typed control uses Responses, attaches a snapshot, rejects mismatched turn
     const status = await (await fetch(`${base}/api/dashboard/status`)).json();
     assert.deepEqual(status.activity.find((entry) => entry.title === "Web search result").sources,
         [{ url: "https://example.com/result", title: "公開資料" }]);
+});
+
+test("BEATs HTTP cough notifications reach Responses and active Live once, with console OFF suppressing input", async (t) => {
+    const contexts = [];
+    const liveEvents = [];
+    const base = await startKernel(t, { key: "test-key", onLiveEvent: (event) => liveEvents.push(event),
+        configure: (config) => { config.live.stateSyncIntervalMs = 25; },
+        route: async (req, res) => {
+            if (req.url === "/sessions") {
+                res.end(JSON.stringify({ session: { id: "live_cough_test" }, transport: { sdp: "v=0 answer" } }));
+                return true;
+            }
+            if (req.url !== "/responses") return false;
+            const chunks = [];
+            for await (const chunk of req) chunks.push(chunk);
+            const body = JSON.parse(Buffer.concat(chunks));
+            const context = JSON.parse(body.input[0].content[0].text);
+            contexts.push(context);
+            res.end(JSON.stringify({ status: "completed", output: [{ type: "message", role: "assistant", status: "completed",
+                content: [{ type: "output_text", text: JSON.stringify({ turn_id: context.turn_id,
+                    result: "大丈夫？ 少し休む？", actions: [], requests: [] }) }] }] }));
+            return true;
+        } });
+    const post = (route, body) => fetch(base + route, { method: "POST",
+        headers: { "Content-Type": "application/json", Origin: "http://localhost:3000" }, body: JSON.stringify(body) });
+    const owner = await (await post("/api/live/session", { sdp: "v=0 offer" })).json();
+    assert.equal((await post("/api/live/heartbeat", { token: owner.control_token, started: true })).status, 200);
+    const settings = "/api/perception/beats/cough-detection";
+    const events = "/api/perception/beats/cough";
+    const now = Date.now();
+    const event = { schema_version: "1.0", event_id: "evt_runtime_cough", label: "cough", source: "microphone", confidence: 0.995,
+        started_at: new Date(now - 500).toISOString(), ended_at: new Date(now).toISOString(), duration_ms: 500,
+        model: { architecture: "beats_cough_transfer", checkpoint: "local.pt", classifier_version: "hash" },
+        decision: { start_threshold: 0.99, peak_score: 0.995, frames_above_threshold: 1 } };
+    assert.equal((await (await post(events, event)).json()).status, "disabled_ignored");
+    await post(settings, { enabled: true });
+    assert.equal((await (await post(events, event)).json()).status, "accepted");
+    const deadline = Date.now() + 3000;
+    while (!liveEvents.some((item) => item.type === "session.commentary.append" && item.content.includes("大丈夫"))
+        && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.equal(contexts.length, 1);
+    assert.equal(contexts[0].trigger.type, "audio.cough_detected");
+    assert.equal(contexts[0].trigger.payload.subject, "unidentified_nearby_person");
+    assert.ok(liveEvents.some((item) => item.type === "session.commentary.append" && item.content.includes("大丈夫")));
+    assert.equal((await (await post(events, event)).json()).status, "duplicate_ignored");
+    assert.equal((await (await post(events, { ...event, event_id: "evt_runtime_burst" })).json()).status, "cooldown_recorded");
+    await post(settings, { enabled: false });
+    assert.equal((await (await post(events, { ...event, event_id: "evt_runtime_off" })).json()).status, "disabled_ignored");
+    const snapshot = await (await fetch(`${base}/api/dashboard/status`)).json();
+    assert.equal(snapshot.coughDetection.enabled, false);
+    assert.equal(snapshot.coughDetection.acceptedCount, 2);
+    assert.equal(contexts.length, 1);
+    assert.equal(new Set(snapshot.endpoints.map((item) => item.route)).size, snapshot.endpoints.length);
+    assert.equal(snapshot.behavior.state.perception.last_cough.status, "known");
+    assert.match(await (await fetch(`${base}/dashboard/`)).text(), /id="cough-enabled"/u);
+    await post("/api/live/stop", { token: owner.control_token });
+});
+
+test("Kernel starts its BEATs supervisor automatically and restores saved ON without a bridge command", async (t) => {
+    for (const savedOn of [false, true]) await t.test(`saved ON ${savedOn}`, async (t) => {
+        const base = await startKernel(t, { configure: async (config, folder) => {
+            config.coughDetection.managedProcess = true;
+            config.coughDetection.detector.directory = path.join(folder, "absent-detector");
+            config.live.enabled = false;
+            if (savedOn) await fs.writeFile(config.coughDetection.storagePath, JSON.stringify({ enabled: true }));
+        } });
+        const settings = `${base}/api/perception/beats/cough-detection`;
+        const waitFor = async (status) => {
+            const deadline = Date.now() + 4000;
+            let snapshot;
+            do {
+                snapshot = await (await fetch(settings)).json();
+                if (snapshot.bridge.status === status) return snapshot;
+                await new Promise((resolve) => setTimeout(resolve, 30));
+            } while (Date.now() < deadline);
+            assert.fail(`BEATs did not report ${status}: ${JSON.stringify(snapshot)}`);
+        };
+        const post = (enabled) => fetch(settings, { method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ enabled }) });
+        if (!savedOn) {
+            const initial = await waitFor("stopped");
+            assert.equal(initial.managedProcess, true);
+            assert.equal(initial.enabled, false); // No model lookup is required while OFF.
+            await post(true);
+        }
+        const attempted = await waitFor("error");
+        assert.equal(attempted.enabled, true);
+        assert.match(attempted.bridge.error, /Missing detector file/u); // Automatic startup reached artifact resolution.
+        await post(false);
+        assert.equal((await waitFor("stopped")).enabled, false);
+        const dashboard = await (await fetch(`${base}/api/dashboard/status`)).json();
+        assert.equal(dashboard.services.find((service) => service.id === "beats").status, "disabled");
+    });
 });

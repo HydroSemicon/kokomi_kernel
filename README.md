@@ -329,7 +329,7 @@ See [the Live implementation specification](docs/live-api-spec.md) for configura
 | --- | --- | --- |
 | BME280 | Active, one-second polling | Temperature, humidity, and pressure |
 | CdS brightness | Active, one-second polling | Raw brightness and lighting condition |
-| Vision / DeepSort | Active HTTP event input | Resolved identity, enrollment, and disappearance |
+| Vision / DeepSORT | Console-managed process or manual launch, with HTTP event input | Resolved identity, enrollment, and disappearance |
 | Camera snapshot | Active on-demand request | Image attached to the same LLM vision turn |
 | Touch | Active event input | Bound body part and petting lifecycle |
 | Audio classification | Active event input | Sound label, level, confidence, quietness, and speech activity |
@@ -357,6 +357,7 @@ See [the Live implementation specification](docs/live-api-spec.md) for configura
 | POST | `/api/perception/beats/cough` | Finalized BEATs cough event |
 | GET / POST | `/api/perception/beats/cough-detection` | Cough detection status and persistent ON/OFF control |
 | POST | `/api/perception/beats/heartbeat` | BEATs bridge process status |
+| GET / POST | `/api/perception/vision/deepsort` | DeepSORT process status and persistent ON/OFF control |
 | POST | `/internal_state` | Normalized homeostatic signals |
 | GET | `/api/behavior/state` | State, world, drives, social state, action state, and proposals |
 | POST | `/api/behavior/tick` | Explicit behavior evaluation tick |
@@ -375,6 +376,23 @@ conversation for spoken check-ins. Configure the microphone and CPU/CUDA in
 `config.json` under `coughDetection.detector`.
 See [BEATs setup and API details](docs/beats-cough-integration.md) for microphone,
 CPU, process lifecycle, and endpoint configuration.
+
+To manage DeepSORT, start the Kernel and turn on **人物認識** in the local
+dashboard at `http://localhost:3000/dashboard/`. With the default Windows
+layout, the Kernel runs `../embodied-vision/deepsort-py311/Scripts/python.exe`
+with `../embodied-vision/deepsort.py` from the Embodied Vision directory.
+Set `vision.deepSort.directory` in `config.json` if the repository is elsewhere.
+An optional `vision.deepSort.python` path is resolved relative to that directory.
+
+The switch defaults to OFF. The Kernel saves the setting beside the observation
+log and restores it at startup. Switching OFF or shutting down the Kernel stops
+the managed process. The dashboard reports when the process starts, including
+the time it takes to load the models. After an unexpected exit, switch OFF and
+back ON to retry. Managed DeepSORT binds to the loopback host and port in
+`vision.snapshotUrl` and sends events to the Kernel's configured Vision event
+endpoint. For a custom Vision port, set the same port in `faceMemory.enrollUrl`.
+To move from manual to managed operation, stop the manually launched service
+before switching ON. For manual operation, leave the switch OFF.
 
 ## Persistence and recovery
 

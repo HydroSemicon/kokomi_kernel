@@ -73,17 +73,31 @@
                     </div>
                     <div id="sensor-grid" class="sensor-grid" aria-live="polite"></div>
 
-                    <article class="panel cough-panel" aria-labelledby="cough-heading">
+                    <article class="panel perception-panel" aria-labelledby="cough-heading">
                         <div>
                             <p class="eyebrow">BEATs</p>
                             <h2 id="cough-heading">咳検出</h2>
                             <p id="cough-status" class="section-note" aria-live="polite">状態を取得しています</p>
                             <p id="cough-last-detected" class="section-note">検出記録はありません</p>
                         </div>
-                        <label class="cough-switch" for="cough-enabled">
+                        <label class="perception-switch" for="cough-enabled">
                             <input id="cough-enabled" type="checkbox" role="switch" aria-describedby="cough-status" disabled>
-                            <span class="cough-switch-track" aria-hidden="true"></span>
+                            <span class="perception-switch-track" aria-hidden="true"></span>
                             <span id="cough-switch-label">OFF</span>
+                        </label>
+                    </article>
+
+                    <article class="panel perception-panel" aria-labelledby="deepsort-heading">
+                        <div>
+                            <p class="eyebrow">DEEPSORT</p>
+                            <h2 id="deepsort-heading">人物認識</h2>
+                            <p id="deepsort-status" class="section-note" aria-live="polite">状態を取得しています</p>
+                        </div>
+                        <label class="perception-switch" for="deepsort-enabled">
+                            <input id="deepsort-enabled" type="checkbox" role="switch" aria-labelledby="deepsort-heading"
+                                aria-describedby="deepsort-status" disabled>
+                            <span class="perception-switch-track" aria-hidden="true"></span>
+                            <span id="deepsort-switch-label">OFF</span>
                         </label>
                     </article>
 

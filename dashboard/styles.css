@@ -102,17 +102,17 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .sensor-value strong { font-size: 30px; letter-spacing: -.045em; font-variant-numeric: tabular-nums; }
 .sensor-value span { color: var(--muted); }
 .sensor-state { color: var(--muted); font-size: 11px; }
-.cough-panel { margin-top: 12px; padding: 20px; display: flex; align-items: center; justify-content: space-between; gap: 20px; }
-.cough-panel h2 { margin: 5px 0 8px; font-size: 17px; }
-.cough-panel .section-note { margin: 4px 0 0; }
-.cough-switch { position: relative; display: flex; align-items: center; gap: 10px; font-weight: 750; cursor: pointer; }
-.cough-switch input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
-.cough-switch-track { width: 44px; height: 26px; padding: 3px; border-radius: 20px; background: #a7b1ac; transition: background .15s; }
-.cough-switch-track::after { content: ""; display: block; width: 20px; height: 20px; border-radius: 50%; background: white; transition: transform .15s; }
-.cough-switch input:checked + .cough-switch-track { background: var(--accent); }
-.cough-switch input:checked + .cough-switch-track::after { transform: translateX(18px); }
-.cough-switch input:focus-visible + .cough-switch-track { outline: 3px solid var(--accent); outline-offset: 3px; }
-.cough-switch input:disabled + .cough-switch-track { opacity: .5; }
+.perception-panel { margin-top: 12px; padding: 20px; display: flex; align-items: center; justify-content: space-between; gap: 20px; }
+.perception-panel h2 { margin: 5px 0 8px; font-size: 17px; }
+.perception-panel .section-note { margin: 4px 0 0; }
+.perception-switch { position: relative; display: flex; align-items: center; gap: 10px; font-weight: 750; cursor: pointer; }
+.perception-switch input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+.perception-switch-track { width: 44px; height: 26px; padding: 3px; border-radius: 20px; background: #a7b1ac; transition: background .15s; }
+.perception-switch-track::after { content: ""; display: block; width: 20px; height: 20px; border-radius: 50%; background: white; transition: transform .15s; }
+.perception-switch input:checked + .perception-switch-track { background: var(--accent); }
+.perception-switch input:checked + .perception-switch-track::after { transform: translateX(18px); }
+.perception-switch input:focus-visible + .perception-switch-track { outline: 3px solid var(--accent); outline-offset: 3px; }
+.perception-switch input:disabled + .perception-switch-track { opacity: .5; }
 .overview-grid { margin-top: 18px; display: grid; grid-template-columns: 1.12fr .88fr; gap: 18px; }
 .panel { border: 1px solid var(--line); border-radius: 12px; background: var(--surface); box-shadow: var(--shadow); }
 .panel-head { min-height: 72px; padding: 18px 20px; display: flex; align-items: center; justify-content: space-between; gap: 14px; border-bottom: 1px solid var(--line); }

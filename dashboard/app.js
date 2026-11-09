@@ -271,6 +271,7 @@ function render(snapshot) {
     renderHero(snapshot);
     renderSensors(snapshot);
     renderCoughDetection(snapshot);
+    renderDeepSort(snapshot);
     renderServices(snapshot);
     renderActivity(snapshot);
     renderEndpoints(snapshot);
@@ -314,6 +315,46 @@ function bindCoughDetection() {
         } finally {
             coughSaving = false;
             renderCoughDetection(state.snapshot);
+        }
+    });
+}
+
+let deepSortSaving = false;
+const localConsole = ["localhost", "127.0.0.1", "[::1]"].includes(window.location.hostname);
+const deepSortStatusLabels = {
+    stopped: "停止中",
+    starting: "DeepSORT を起動しています",
+    running: "DeepSORT プロセス稼働中 · モデル読み込み中も含みます",
+    stopping: "DeepSORT を停止しています",
+};
+
+function renderDeepSort(snapshot) {
+    const deepSort = snapshot.deepSort;
+    const toggle = $("#deepsort-enabled");
+    toggle.disabled = !deepSort || deepSortSaving || !localConsole;
+    toggle.checked = deepSort?.enabled === true;
+    $("#deepsort-switch-label").textContent = deepSort?.enabled ? "ON" : "OFF";
+    $("#deepsort-status").textContent = !localConsole ? "起動・停止はカーネルと同じPCのコンソールで行ってください"
+        : deepSort?.error ?? deepSortStatusLabels[deepSort?.status] ?? "状態を取得しています";
+}
+
+function bindDeepSort() {
+    const toggle = $("#deepsort-enabled");
+    toggle.addEventListener("change", async () => {
+        const previous = state.snapshot.deepSort;
+        deepSortSaving = true;
+        toggle.disabled = true;
+        try {
+            const response = await fetch(state.snapshot.capabilities.deepSortEndpoint, { method: "POST",
+                headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled: toggle.checked }) });
+            const result = await response.json();
+            if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
+            if (state.snapshot.deepSort === previous) state.snapshot.deepSort = result;
+        } catch (error) {
+            showToast("DeepSORT の切り替えに失敗しました", error.message, true);
+        } finally {
+            deepSortSaving = false;
+            renderDeepSort(state.snapshot);
         }
     });
 }
@@ -367,6 +408,11 @@ function connectEventStream() {
         if (!state.snapshot) return;
         state.snapshot.coughDetection = JSON.parse(event.data);
         renderCoughDetection(state.snapshot);
+    });
+    stream.addEventListener("deepsort", (event) => {
+        if (!state.snapshot) return;
+        state.snapshot.deepSort = JSON.parse(event.data);
+        renderDeepSort(state.snapshot);
     });
     stream.onerror = () => {
         state.streamConnected = false;
@@ -573,6 +619,7 @@ setInterval(refreshMemory, 15000);
 
 bindLive();
 bindCoughDetection();
+bindDeepSort();
 bindForms();
 bindNavigation();
 updateClock();

@@ -4,7 +4,8 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { createServer } from "node:http";
+import { createServer, request } from "node:http";
+import { setTimeout as delay } from "node:timers/promises";
 import { spawn } from "node:child_process";
 import { WebSocketServer } from "ws";
 
@@ -314,4 +315,87 @@ test("Kernel starts its BEATs supervisor automatically and restores saved ON wit
         const dashboard = await (await fetch(`${base}/api/dashboard/status`)).json();
         assert.equal(dashboard.services.find((service) => service.id === "beats").status, "disabled");
     });
+});
+
+test("local DeepSORT switch starts one managed process and stops its Windows launcher tree", async (t) => {
+    const occupied = createServer((_req, res) => res.end("external"));
+    occupied.listen(0, "127.0.0.1");
+    await new Promise((resolve) => occupied.once("listening", resolve));
+    t.after(() => occupied.close());
+    const visionUrl = `http://127.0.0.1:${occupied.address().port}`;
+    let settingsPath;
+    const listener = `
+        const { createServer } = require("node:http");
+        createServer((_req, res) => res.end(JSON.stringify({
+            pid: process.pid, eventUrl: process.env.VISION_EVENT_URL, cwd: process.cwd()
+        }))).listen(Number(process.env.VISION_HTTP_PORT), process.env.VISION_HTTP_HOST);
+        setTimeout(() => process.exit(0), 30000).unref();
+    `;
+    // On Windows, use a second process to model the Python venv redirector.
+    const fakeScript = process.platform === "win32"
+        ? `require("node:child_process").spawn(process.execPath, ["-e", ${JSON.stringify(listener)}], { windowsHide: true });`
+        : listener;
+    let visionDirectory;
+    const base = await startKernel(t, { configure: async (config, folder) => {
+        visionDirectory = path.join(folder, "vision fixture");
+        await fs.mkdir(visionDirectory);
+        await fs.writeFile(path.join(visionDirectory, "deepsort.py"), fakeScript);
+        settingsPath = path.join(folder, "deepsort-settings.json");
+        config.vision.snapshotUrl = `${visionUrl}/snapshot`;
+        config.vision.deepSort = { directory: visionDirectory, python: process.execPath };
+        config.routes.yoloEvent = "/test_vision_event";
+    } });
+    const statusUrl = `${base}/api/dashboard/status`;
+    const dashboard = await (await fetch(statusUrl)).json();
+    assert.deepEqual(dashboard.deepSort, { enabled: false, status: "stopped", error: null });
+    assert.match(await (await fetch(`${base}/dashboard/`)).text(), /id="deepsort-enabled"/u);
+    const endpoint = base + dashboard.capabilities.deepSortEndpoint;
+    const post = (enabled) => fetch(endpoint, { method: "POST",
+        headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled }) });
+    assert.equal((await post("true")).status, 400);
+    const denied = await new Promise((resolve, reject) => {
+        const req = request(endpoint, { method: "POST", headers: { Host: "other.test", "Content-Type": "application/json" } },
+            (res) => { res.resume(); resolve(res.statusCode); });
+        req.once("error", reject);
+        req.end(JSON.stringify({ enabled: true }));
+    });
+    assert.equal(denied, 403);
+    const conflict = await (await post(true)).json();
+    assert.equal(conflict.status, "error");
+    assert.match(conflict.error, /port is already in use/u);
+    assert.equal(await (await fetch(visionUrl)).text(), "external");
+    occupied.closeAllConnections();
+    await new Promise((resolve) => occupied.close(resolve));
+
+    let processInfo;
+    try {
+        assert.equal((await post(true)).status, 200);
+        const deadline = Date.now() + 5000;
+        while (!processInfo && Date.now() < deadline) {
+            processInfo = await fetch(visionUrl).then((response) => response.json()).catch(() => null);
+            if (!processInfo) await delay(30);
+        }
+        assert.ok(processInfo, "The managed process did not start listening");
+        assert.equal(processInfo.eventUrl, `${base}/test_vision_event`);
+        assert.equal(processInfo.cwd, visionDirectory);
+        assert.equal((await (await post(true)).json()).status, "running");
+        assert.equal((await (await fetch(visionUrl)).json()).pid, processInfo.pid);
+        assert.deepEqual(JSON.parse(await fs.readFile(settingsPath, "utf8")), { enabled: true });
+        assert.equal((await (await fetch(statusUrl)).json()).deepSort.status, "running");
+    } finally {
+        assert.deepEqual(await (await post(false)).json(), { enabled: false, status: "stopped", error: null });
+    }
+    assert.deepEqual(JSON.parse(await fs.readFile(settingsPath, "utf8")), { enabled: false });
+    await assert.rejects(fetch(visionUrl));
+});
+
+test("Kernel restores a saved DeepSORT ON setting and reports missing Python", async (t) => {
+    const base = await startKernel(t, { configure: async (config, folder) => {
+        config.vision.deepSort = { enabled: false, directory: path.join(folder, "absent-vision") };
+        await fs.writeFile(path.join(folder, "deepsort-settings.json"), JSON.stringify({ enabled: true }));
+    } });
+    const state = await (await fetch(`${base}/api/perception/vision/deepsort`)).json();
+    assert.equal(state.enabled, true);
+    assert.equal(state.status, "error");
+    assert.match(state.error, /DeepSORT Python was not found/u);
 });

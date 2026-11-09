@@ -24,12 +24,14 @@ import { ResponsesBackend } from "./src/live/responses-backend.js";
 import { ApiDiagnostics } from "./src/live/api-diagnostics.js";
 import { CoughDetectionService, mountCoughRoutes } from "./src/perception/cough-service.js";
 import { BeatsCoughBridge, configuredDetectorCommand } from "./src/perception/beats-cough-bridge.js";
+import { DeepSortService, mountDeepSortRoutes } from "./src/perception/deepsort-service.js";
 
 const config = JSON.parse(fs.readFileSync(process.env.KOKOMI_CONFIG_PATH
     ? path.resolve(process.env.KOKOMI_CONFIG_PATH) : new URL("./config.json", import.meta.url), "utf8"));
 config.routes.beatsCough ??= "/api/perception/beats/cough";
 config.routes.coughDetection ??= "/api/perception/beats/cough-detection";
 config.routes.beatsHeartbeat ??= "/api/perception/beats/heartbeat";
+config.routes.deepSort ??= "/api/perception/vision/deepsort";
 if (new Set(Object.values(config.routes)).size !== Object.values(config.routes).length) {
     throw new Error("Kernel routes must not overlap");
 }
@@ -193,6 +195,13 @@ const coughService = new CoughDetectionService({
     },
 });
 const coughReady = coughService.initialize();
+const deepSortService = new DeepSortService({
+    config: config.vision,
+    repositoryDirectory,
+    storagePath: path.resolve(repositoryDirectory, config.vision.deepSort?.storagePath
+        ?? path.join(path.dirname(config.persistence.eventLogPath), "deepsort-settings.json")),
+    onChange: (state) => broadcastDashboard("deepsort", state),
+});
 
 const serviceState = {
     live: { status: LIVE_ENABLED ? "idle" : "disabled", label: "Live conversation",
@@ -216,6 +225,7 @@ const endpointState = new Map([
     [config.routes.beatsCough, { method: "POST", label: "BEATs咳検出通知", calls: 0, errors: 0 }],
     [config.routes.coughDetection, { method: "GET / POST", label: "咳検出ON/OFF", calls: 0, errors: 0, trackActivity: false }],
     [config.routes.beatsHeartbeat, { method: "POST", label: "BEATsブリッジ状態", calls: 0, errors: 0, trackActivity: false }],
+    [config.routes.deepSort, { method: "GET / POST", label: "DeepSORT ON/OFF", calls: 0, errors: 0, trackActivity: false }],
     [config.routes.internalState, { method: "POST", label: "身体内部状態", calls: 0, errors: 0 }],
     [config.routes.behaviorState, { method: "GET", label: "行動状態スナップショット", calls: 0, errors: 0, trackActivity: false }],
     [config.routes.behaviorTick, { method: "POST", label: "自発行動ティック", calls: 0, errors: 0 }],
@@ -339,6 +349,7 @@ function publicDashboardState() {
         endpoints,
         sensors: publicSensorState(),
         coughDetection: coughService.snapshot(),
+        deepSort: deepSortService.snapshot(),
         behavior: dashboardBehaviorSnapshot(),
         memory: {
             pendingProposalCount: memoryStore.list({ status: "pending" }).length,
@@ -355,6 +366,7 @@ function publicDashboardState() {
         capabilities: {
             memoryEndpoint: config.routes.memoryProposals,
             coughDetectionEndpoint: config.routes.coughDetection,
+            deepSortEndpoint: config.routes.deepSort,
             live: { enabled: LIVE_ENABLED, iceTimeoutMs: config.live.iceTimeoutMs,
                 silenceWarningSeconds: config.live.silenceWarningSeconds,
                 silenceWarningRepeatSeconds: config.live.silenceWarningRepeatSeconds,
@@ -994,6 +1006,7 @@ app.use((req, res, next) => {
 
 mountCoughRoutes(app, { service: coughService, routes: config.routes,
     ready: Promise.all([runtimeReady, coughReady]) });
+mountDeepSortRoutes(app, config.routes.deepSort, deepSortService);
 coughReady.then(() => updateService("beats", { status: coughService.enabled ? "idle" : "disabled",
     detail: coughService.enabled ? "Preparing cough detection" : "Cough detection disabled" }))
     .catch((error) => updateService("beats", { status: "degraded", detail: error.message }));
@@ -1259,6 +1272,7 @@ app.post(`${config.routes.socialProposals}/:id/decision`, async (req, res) => {
 });
 
 const kernelServer = app.listen(config.server.port, () => {
+    deepSortService.initialize(`http://127.0.0.1:${kernelServer.address().port}${config.routes.yoloEvent}`);
     if (config.coughDetection?.managedProcess !== false) {
         managedCoughBridge = new BeatsCoughBridge({
             kernelUrl: `http://127.0.0.1:${kernelServer.address().port}`,
@@ -1279,9 +1293,12 @@ const kernelServer = app.listen(config.server.port, () => {
     });
 });
 
-for (const signal of ["SIGINT", "SIGTERM"]) process.once(signal, async () => {
+let shuttingDown = false;
+for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, async () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
     try {
-        await managedCoughBridge?.close();
+        await Promise.all([managedCoughBridge?.close(), deepSortService.close()]);
         if (LIVE_ENABLED) {
             if (liveService.session && !liveService.session.closeConfirmed) await liveService.stop(liveService.session.token);
             await conversationStore.queue;

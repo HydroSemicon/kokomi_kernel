@@ -321,7 +321,7 @@ the threshold and repeat interval are configurable in `config.live`.
 Browser DevTools exposes `kokomi.memory()` and `kokomi.liveDiagnostics()` for read-only inspection.
 `config.live.enabled: false` disables voice while typed requests and kernel inference remain available.
 
-See [the Live implementation specification](docs/live-api-spec.md) for configuration, API payloads, memory recovery, and verification.
+See [the runtime configuration](config.json), [Live session service](src/live/session-service.js), and [Live regression tests](test/live-session.test.js) for configuration, API payloads, and verification.
 
 ## Perception and physical integration
 
@@ -374,8 +374,9 @@ The Kernel automatically starts the cough-only model from `../embodied-YAMNet`
 and stops it when switched OFF or when the Kernel shuts down. Start a Live
 conversation for spoken check-ins. Configure the microphone and CPU/CUDA in
 `config.json` under `coughDetection.detector`.
-See [BEATs setup and API details](docs/beats-cough-integration.md) for microphone,
-CPU, process lifecycle, and endpoint configuration.
+See [the detector bridge](src/perception/beats-cough-bridge.js),
+[cough event service](src/perception/cough-service.js), and [runtime configuration](config.json)
+for microphone, CPU, process lifecycle, and endpoint configuration.
 
 To manage DeepSORT, start the Kernel and turn on **人物認識** in the local
 dashboard at `http://localhost:3000/dashboard/`. With the default Windows
@@ -401,7 +402,7 @@ before switching ON. For manual operation, leave the switch OFF.
 - Startup replay is bounded to 20,000 events.
 - Replay rebuilds state without replaying old spontaneous proposals.
 - Incomplete action intentions are reconciled into explicit terminal diagnostic states.
-- Legacy ASR, TTS, and filler events remain readable in historical logs but no longer create runtime voice state. See [the cleanup and recovery notes](docs/legacy-voice-cleanup.md).
+- Legacy ASR, TTS, and filler events remain readable in historical logs but no longer create runtime voice state.
 - Accepted memory and social records use separate runtime stores.
 - Runtime data is intentionally excluded from source control.
 

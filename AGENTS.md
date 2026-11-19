@@ -2,7 +2,7 @@
 
 ## 対象と参照先
 
-Kokomi Kernelは、ロボットの観測、身体状態、記憶、行動の意図と結果を管理する。実行時の接続は `alice.js` と `config.json`、設計と契約は `README.md` と対象コードを確認する。Live会話では `docs/live-api-spec.md`、咳検出では `docs/beats-cough-integration.md`、制御応答では `control_prompt.md` と `src/protocol/llm-response.js` を参照する。`archives/` は設計履歴として扱う。
+Kokomi Kernelは、ロボットの観測、身体状態、記憶、行動の意図と結果を管理する。実行時の接続は `alice.js` と `config.json`、設計と契約は `README.md` と対象コードを確認する。Live会話では `src/live/session-service.js` と `src/live/responses-backend.js`、咳検出では `src/perception/beats-cough-bridge.js` と `src/perception/cough-service.js`、制御応答では `control_prompt.md` と `src/protocol/llm-response.js` を参照する。`archives/` は設計履歴として扱う。
 
 ## 変更時に維持する設計
 

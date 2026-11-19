@@ -1580,7 +1580,7 @@ alice.jsは入出力の接続が集まるファイルです。状態の規則そ
 | dashboard/app.js | 表示、手動操作、文字入力 | update表示、活動、kokomi |
 | tools/memory-list.js | 記憶一覧の読出し | オプション解析と一覧表示 |
 
-実際の公開名や補助関数はファイル内で確認してください。表は読解の入口を示す地図です。docs/live-api-spec.mdも補助資料になりますが、動作の根拠は現在のソースと設定を優先しています。
+実際の公開名や補助関数はファイル内で確認してください。表は読解の入口を示す地図です。動作の根拠は現在のソースと設定を優先しています。
 
 @sources src/live/session-service.js | src/live/kernel-bridge.js | src/live/memory-wire.js | dashboard/live-client.js | dashboard/live-audio-monitor.js | tools/memory-list.js
 
@@ -1637,4 +1637,4 @@ kernel_guide_ja.mdは本文の編集用原稿、build_kernel_guide.pyはPDFの�
 
 外部資料はAPIの概念理解を助けるものです。実装済みの経路・制限・設定値は、各ページのコード参照を根拠としています。
 
-@sources package.json | config.json | control_prompt.md | docs/live-api-spec.md | src/live/responses-backend.js | src/live/session-service.js
+@sources package.json | config.json | control_prompt.md | src/live/responses-backend.js | src/live/session-service.js

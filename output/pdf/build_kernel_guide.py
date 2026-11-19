@@ -212,7 +212,7 @@ class Cover(Flowable):
 def manifest():
     files=[ROOT/'alice.js',ROOT/'config.json',ROOT/'package.json',ROOT/'control_prompt.md',ROOT/'README.md']
     files+=sorted((ROOT/'src').rglob('*.js'))+sorted((ROOT/'dashboard').glob('*.js'))+sorted((ROOT/'test').glob('*.js'))
-    files+=[ROOT/'docs/live-api-spec.md',ROOT/'tools/memory-list.js',ROOT/'.env.example',ROOT/'.gitignore',ROOT/'dashboard/index.html',ROOT/'dashboard/styles.css']
+    files+=[ROOT/'tools/memory-list.js',ROOT/'.env.example',ROOT/'.gitignore',ROOT/'dashboard/index.html',ROOT/'dashboard/styles.css']
     return {str(f.relative_to(ROOT)).replace('\\','/'):{'sha256':hashlib.sha256(f.read_bytes()).hexdigest(),'lines':len(f.read_text(encoding='utf-8-sig').splitlines())} for f in files}
 
 def main():
